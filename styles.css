@@ -135,6 +135,7 @@ h2 {
 }
 
 .transport-actions {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(3, 38px);
   gap: 7px;
@@ -247,6 +248,11 @@ h2 {
   cursor: pointer;
 }
 .bpm-step-btn:active { background: rgba(247, 243, 232, 0.18); }
+.bpm-step-btn.active {
+  border-color: rgba(240, 179, 91, 0.8);
+  background: rgba(240, 179, 91, 0.2);
+  color: #f0b35b;
+}
 
 .bpm-modal-input {
   flex: 1 1 0;
@@ -727,6 +733,26 @@ button {
 .pad-synth-panel .utility-button {
   min-height: 44px;
   align-self: end;
+}
+
+.pad-eq-panel {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+.pad-eq-panel.collapsed { display: none; }
+.pad-eq-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px 8px;
+  padding: 8px 0;
+}
+.knob-bypassed {
+  opacity: 0.35;
+}
+.knob-bypassed .knob-fill {
+  stroke: rgba(247, 243, 232, 0.3);
 }
 
 .drum-editor-panel {

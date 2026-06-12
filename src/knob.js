@@ -144,12 +144,14 @@ export class StepKnob {
 }
 
 export class Knob {
-  constructor({ label, min, max, value, format, onChange }) {
+  constructor({ label, min, max, value, format, onChange, onTap }) {
     this.min = min;
     this.max = max;
     this.format = format || (v => String(Math.round(v)));
     this.onChange = onChange;
+    this.onTap = onTap || null;
     this.value = value;
+    this.defaultValue = value;
 
     const el = document.createElement("div");
     el.className = "knob-unit";
@@ -222,9 +224,23 @@ export class Knob {
   }
 
   _setupDrag(svg) {
-    let startY, startVal;
+    let startY, startVal, dragged;
+    let lastTap = 0;
+    const DOUBLE_MS = 350;
+
+    const tryReset = () => {
+      const now = Date.now();
+      if (now - lastTap < DOUBLE_MS) {
+        this.setValue(this.defaultValue);
+        lastTap = 0;
+      } else {
+        lastTap = now;
+        this.onTap?.();
+      }
+    };
 
     const move = (clientY) => {
+      if (Math.abs(startY - clientY) > 4) dragged = true;
       const delta = startY - clientY;
       const newVal = startVal + (delta / 120) * (this.max - this.min);
       this.setValue(newVal);
@@ -234,12 +250,14 @@ export class Knob {
       e.preventDefault();
       startY = e.clientY;
       startVal = this.value;
+      dragged = false;
       document.body.style.cursor = "ns-resize";
       const mm = (e) => move(e.clientY);
       const up = () => {
         document.removeEventListener("mousemove", mm);
         document.removeEventListener("mouseup", up);
         document.body.style.cursor = "";
+        if (!dragged) tryReset();
       };
       document.addEventListener("mousemove", mm);
       document.addEventListener("mouseup", up);
@@ -249,10 +267,12 @@ export class Knob {
       e.preventDefault();
       startY = e.touches[0].clientY;
       startVal = this.value;
+      dragged = false;
       const tm = (e) => { e.preventDefault(); move(e.touches[0].clientY); };
       const te = () => {
         document.removeEventListener("touchmove", tm);
         document.removeEventListener("touchend", te);
+        if (!dragged) tryReset();
       };
       document.addEventListener("touchmove", tm, { passive: false });
       document.addEventListener("touchend", te);

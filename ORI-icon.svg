@@ -1,0 +1,45 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="iconBg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1A1B22"/>
+      <stop offset="100%" stop-color="#08090C"/>
+    </linearGradient>
+    <linearGradient id="shapeLight" x1="428" y1="0" x2="428" y2="547" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#B8B8B8"/>
+    </linearGradient>
+    <linearGradient id="shapeMid" x1="428" y1="0" x2="428" y2="547" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#D0D0D0"/>
+      <stop offset="100%" stop-color="#8A8A8A"/>
+    </linearGradient>
+    <linearGradient id="shapeDark" x1="428" y1="0" x2="428" y2="547" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#888888"/>
+      <stop offset="100%" stop-color="#3C3C3C"/>
+    </linearGradient>
+    <filter id="shapeGlow" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="10" result="blur"/>
+      <feFlood flood-color="#FFFFFF" flood-opacity="0.12" result="glowColor"/>
+      <feComposite in="glowColor" in2="blur" operator="in" result="glow"/>
+      <feMerge>
+        <feMergeNode in="glow"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background: dark rounded square -->
+  <rect width="1024" height="1024" rx="220" fill="url(#iconBg)"/>
+
+  <!-- Logo shapes: scaled 0.963, centered (translate 100,249) -->
+  <!-- Original viewBox: 856x547 (paths 1-4, no text) -->
+  <g filter="url(#shapeGlow)" transform="translate(65, 249) scale(0.963)">
+    <!-- Right chevron: brightest (was amber) -->
+    <path d="M575.217 268.215L294.717 547.215V394.442L408.217 268.215L294.717 155.215V1.71472L575.217 268.215Z" fill="url(#shapeLight)"/>
+    <!-- Left chevron: darker (was teal) -->
+    <path d="M0.717285 267.715L281.217 546.715V393.942L167.717 267.715L281.217 154.715V1.21472L0.717285 267.715Z" fill="url(#shapeDark)"/>
+    <!-- Bracket: light gray (was amber) -->
+    <path d="M601.217 0.714722H309.217L426.717 112.715H582.217L588.717 435.215L715.717 546.715V112.715L601.217 0.714722Z" fill="url(#shapeMid)"/>
+    <!-- Bar: dark (was teal) -->
+    <path d="M742.717 435.715L854.717 548.215V114.215L742.717 1.21472V435.715Z" fill="url(#shapeDark)" opacity="0.8"/>
+  </g>
+</svg>

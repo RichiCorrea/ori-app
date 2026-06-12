@@ -84,7 +84,7 @@ export const timeSignatures = {
     baseUnitCount: 5,
     defaultGridResolution: 20,
     accentGroups: [3, 2],
-    accentMap: ["strong", "weak", "weak", "medium", "weak"],
+    accentMap: ["strong", "weak", "weak", "weak", "weak"],
   },
   "4/8": {
     pulseType: "simple",
@@ -104,11 +104,11 @@ export const timeSignatures = {
   },
   "7/8": {
     pulseType: "irregular",
-    pulseCount: 3,
+    pulseCount: 7,
     baseUnitCount: 7,
     defaultGridResolution: 14,
     accentGroups: [2, 2, 3],
-    accentMap: ["strong", "weak", "medium", "weak", "medium", "weak", "weak"],
+    accentMap: ["strong", "weak", "weak", "weak", "weak", "weak", "weak"],
   },
   "9/8": {
     pulseType: "compound",

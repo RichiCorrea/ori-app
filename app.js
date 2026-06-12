@@ -110,7 +110,8 @@ function getMeterConfig(meter = scenes[state.sceneId]?.meter || "4/4") {
 }
 
 function getCurrentStepCount() {
-  return getMeterConfig().defaultGridResolution;
+  const full = getMeterConfig().defaultGridResolution;
+  return state.drumSubdivision === "1/8" ? Math.floor(full / 2) : full;
 }
 
 function getGroupStartSteps(meter = scenes[state.sceneId]?.meter || "4/4") {
@@ -213,9 +214,12 @@ function saveAppState() {
     drumKitId: state.drumKitId,
     drumVoiceIds: state.drumVoiceIds,
     drumRate: state.drumRate,
+    drumSubdivision: state.drumSubdivision,
+    clickMode: state.clickMode,
     volumes: state.volumes,
     muted: state.muted,
     ui: state.ui,
+    padEq: state.padEq,
   };
 
   const didWriteLocal = writeStorage(STORAGE_KEY, JSON.stringify(snapshot));
@@ -266,6 +270,14 @@ function applyAppSnapshot(snapshot) {
     state.drumRate = snapshot.drumRate;
   }
 
+  if (["1/8", "1/16"].includes(snapshot.drumSubdivision)) {
+    state.drumSubdivision = snapshot.drumSubdivision;
+  }
+
+  if (["pulse", "subdivision"].includes(snapshot.clickMode)) {
+    state.clickMode = snapshot.clickMode;
+  }
+
   if (snapshot.volumes) {
     Object.keys(state.volumes).forEach((channel) => {
       if (typeof snapshot.volumes[channel] === "number") {
@@ -287,6 +299,15 @@ function applyAppSnapshot(snapshot) {
     state.ui.padSynthCollapsed = Boolean(snapshot.ui.padSynthCollapsed);
     state.ui.drumEditorCollapsed = Boolean(snapshot.ui.drumEditorCollapsed);
     state.ui.accentEditMode = Boolean(snapshot.ui.accentEditMode);
+  }
+
+  if (snapshot.padEq) {
+    if (typeof snapshot.padEq.enabled === "boolean") state.padEq.enabled = snapshot.padEq.enabled;
+    if (Array.isArray(snapshot.padEq.bands) && snapshot.padEq.bands.length === 9) state.padEq.bands = [...snapshot.padEq.bands];
+    if (Array.isArray(snapshot.padEq.bandsEnabled) && snapshot.padEq.bandsEnabled.length === 9) state.padEq.bandsEnabled = [...snapshot.padEq.bandsEnabled];
+    if (typeof snapshot.padEq.hpf === "number") state.padEq.hpf = snapshot.padEq.hpf;
+    if (typeof snapshot.padEq.lpf === "number") state.padEq.lpf = snapshot.padEq.lpf;
+    if (typeof snapshot.padEq.output === "number") state.padEq.output = snapshot.padEq.output;
   }
 }
 
@@ -366,6 +387,7 @@ const state = {
   sceneId: "warm",
   pendingSceneId: null,
   metronomeEnabled: false,
+  clickMode: "subdivision",
   loopEnabled: false,
   pendingLoopEnabled: null,
   drumsEnabled: false,
@@ -375,6 +397,7 @@ const state = {
   drumSubStep: 0,
   drumTimers: [],
   drumRate: "normal",
+  drumSubdivision: "1/16",
   drumPatternId: "soft",
   drumKitId: "soft",
   drumVoiceIds: {
@@ -453,6 +476,7 @@ const state = {
     lfoTarget: "tremolo",
     octShift: 0,
     outputGain: 0,
+    naturalAccent: true,
   },
   ui: {
     mixerCollapsed: false,
@@ -460,6 +484,15 @@ const state = {
     drumEditorCollapsed: false,
     accentEditMode: false,
   },
+  padEq: {
+    enabled: false,
+    bands: [0, 0, 0, 0, 0, 0, 0, 0, 0],
+    bandsEnabled: [true, true, true, true, true, true, true, true, true],
+    hpf: 20,
+    lpf: 20000,
+    output: 0,
+  },
+  padEqNode: null,
 };
 
 const bpmReadout = document.querySelector("#bpmReadout");
@@ -502,6 +535,9 @@ const padWarmthReadout = document.querySelector("#padWarmthReadout");
 const padSpaceReadout = document.querySelector("#padSpaceReadout");
 const padTextureReadout = document.querySelector("#padTextureReadout");
 const padEvolveToggle = document.querySelector("#padEvolveToggle");
+const padEqToggle = document.querySelector("#padEqToggle");
+const padEqPanel = document.querySelector("#padEqPanel");
+const padEqKnobsContainer = document.querySelector("#padEqKnobs");
 const playToggle = document.querySelector("#playToggle");
 const metronomeToggle = document.querySelector("#metronomeToggle");
 const loopToggle = document.querySelector("#loopToggle");
@@ -527,6 +563,7 @@ const drumEditorToggleIcon = document.querySelector("#drumEditorToggleIcon");
 const drumEditorPanel = document.querySelector("#drumEditorPanel");
 const resetPattern = document.querySelector("#resetPattern");
 const accentModeToggle = document.querySelector("#accentModeToggle");
+const drumSubdivisionToggle = document.querySelector("#drumSubdivisionToggle");
 const drumRateSelect = document.querySelector("#drumRateSelect");
 const instrumentMenu = document.querySelector("#instrumentMenu");
 const instrumentMenuTitle = document.querySelector("#instrumentMenuTitle");
@@ -591,6 +628,8 @@ function renderTransport() {
   drumMute.classList.toggle("active", state.muted.drum);
   arpMute.classList.toggle("active", state.muted.arp);
   drumRateSelect.value = state.drumRate;
+  drumSubdivisionToggle.textContent = state.drumSubdivision;
+  drumSubdivisionToggle.classList.toggle("active", state.drumSubdivision === "1/16");
   accentModeToggle.classList.toggle("active", state.ui.accentEditMode);
   renderPadSynthControls();
   renderSceneControls();
@@ -623,6 +662,7 @@ function renderPadSynthControls() {
   });
 
   padEvolveToggle.classList.toggle("active", settings.evolve);
+  padEqToggle.classList.toggle("active", state.padEq.enabled);
 }
 
 function renderSceneControls() {
@@ -648,37 +688,46 @@ function getCurrentDrumPattern() {
 function renderDrumEditor() {
   stepHeader.innerHTML = "<span></span><div class=\"step-grid\" id=\"stepNumbers\"></div>";
   const stepNumbers = document.querySelector("#stepNumbers");
-  const { defaultGridResolution: steps, accentGroups } = getMeterConfig();
+  const { defaultGridResolution: fullSteps } = getMeterConfig();
   const groupStarts = getGroupStartSteps();
-  stepNumbers.style.setProperty("--step-count", steps);
+  const visibleCount = getCurrentStepCount();
+  const stepFactor = fullSteps / visibleCount; // 1 for 1/16, 2 for 1/8
 
-  for (let step = 0; step < steps; step += 1) {
+  stepNumbers.style.setProperty("--step-count", visibleCount);
+
+  let beatCount = 0;
+  for (let v = 0; v < visibleCount; v++) {
+    const internalStep = v * stepFactor;
+    const isGroupStart = groupStarts.includes(internalStep);
+    if (isGroupStart) beatCount++;
     const number = document.createElement("span");
     number.className = "step-number";
-    number.classList.toggle("group-start", groupStarts.includes(step));
-    number.textContent = groupStarts.includes(step) ? String(step + 1) : "";
+    number.classList.toggle("group-start", isGroupStart);
+    number.textContent = isGroupStart ? String(beatCount) : "";
     stepNumbers.appendChild(number);
   }
 
   Object.entries(stepContainers).forEach(([instrument, container]) => {
     container.innerHTML = "";
-    container.style.setProperty("--step-count", steps);
-    for (let step = 0; step < steps; step += 1) {
+    container.style.setProperty("--step-count", visibleCount);
+    for (let v = 0; v < visibleCount; v++) {
+      const internalStep = v * stepFactor;
+      const isGroupStart = groupStarts.includes(internalStep);
       const button = document.createElement("button");
       button.className = "step-button";
       button.type = "button";
       button.dataset.instrument = instrument;
-      button.dataset.step = String(step);
-      button.classList.toggle("group-start", groupStarts.includes(step));
-      button.setAttribute("aria-label", `${instrument} step ${step + 1}`);
+      button.dataset.step = String(internalStep);
+      button.classList.toggle("group-start", isGroupStart);
+      button.setAttribute("aria-label", `${instrument} step ${v + 1}`);
       button.addEventListener("pointerup", (event) => {
         event.preventDefault();
-        handleDrumStepTap(instrument, step);
+        handleDrumStepTap(instrument, internalStep);
       });
       button.addEventListener("keydown", (event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
-        toggleDrumStep(instrument, step);
+        toggleDrumStep(instrument, internalStep);
       });
       container.appendChild(button);
     }
@@ -688,13 +737,13 @@ function renderDrumEditor() {
 }
 
 function renderDrumSteps() {
-  const stepCount = getCurrentStepCount();
+  const fullCount = getMeterConfig().defaultGridResolution;
   const pattern = getCurrentDrumPattern();
   Object.entries(stepContainers).forEach(([instrument, container]) => {
     container.querySelectorAll(".step-button").forEach((button) => {
       const step = Number(button.dataset.step);
       const event = getDrumEvent(pattern, instrument, step);
-      button.classList.toggle("active", step < stepCount && Boolean(event));
+      button.classList.toggle("active", step < fullCount && Boolean(event));
       button.classList.toggle("accent", Boolean(event?.accent));
       button.title = event?.accent ? "Acento fuerte" : "";
     });
@@ -847,7 +896,7 @@ function applyChannelGain(channel) {
   if (!state[`${channel}Gain`]) return;
 
   const now = state.audioContext.currentTime;
-  const scale = channel === "arp" ? 0.30 : 1;
+  const scale = channel === "arp" ? 0.30 : channel === "pad" ? Math.pow(10, 12 / 20) : 1;
   const targetValue = state.muted[channel] ? 0 : state.volumes[channel] * scale;
   state[`${channel}Gain`].gain.cancelScheduledValues(now);
   state[`${channel}Gain`].gain.setTargetAtTime(targetValue, now, 0.02);
@@ -974,6 +1023,46 @@ function playDrumSample(instrument, time, velocity = 1) {
 }
 
 
+function createPadEQ(ctx) {
+  const BAND_FREQS = [80, 150, 250, 400, 800, 2000, 3500, 6000, 12000];
+  const input = ctx.createGain();
+  const filters = BAND_FREQS.map(freq => {
+    const f = ctx.createBiquadFilter();
+    f.type = "peaking"; f.frequency.value = freq; f.Q.value = 1.2; f.gain.value = 0;
+    return f;
+  });
+  const hpf = ctx.createBiquadFilter();
+  hpf.type = "highpass"; hpf.frequency.value = 20; hpf.Q.value = 0.7;
+  const lpf = ctx.createBiquadFilter();
+  lpf.type = "lowpass"; lpf.frequency.value = 20000; lpf.Q.value = 0.7;
+  const outGain = ctx.createGain();
+  outGain.gain.value = 1;
+  const output = ctx.createGain();
+  let prev = input;
+  for (const f of filters) { prev.connect(f); prev = f; }
+  prev.connect(hpf); hpf.connect(lpf); lpf.connect(outGain); outGain.connect(output);
+  return {
+    input, output,
+    setBand(i, db) { filters[i].gain.setTargetAtTime(db, ctx.currentTime, 0.01); },
+    setHPF(hz) { hpf.frequency.setTargetAtTime(Math.max(20, hz), ctx.currentTime, 0.01); },
+    setLPF(hz) { lpf.frequency.setTargetAtTime(Math.min(20000, hz), ctx.currentTime, 0.01); },
+    setOutput(db) { outGain.gain.setTargetAtTime(Math.pow(10, db / 20), ctx.currentTime, 0.01); },
+    setBandEnabled(i, on, s) {
+      const db = on && s.enabled ? (s.bands[i] ?? 0) : 0;
+      this.setBand(i, db);
+    },
+    applyState(s) {
+      s.bands.forEach((db, i) => {
+        const on = s.bandsEnabled ? s.bandsEnabled[i] !== false : true;
+        this.setBand(i, s.enabled && on ? db : 0);
+      });
+      this.setHPF(s.enabled ? s.hpf : 20);
+      this.setLPF(s.enabled ? s.lpf : 20000);
+      this.setOutput(s.enabled ? s.output : 0);
+    },
+  };
+}
+
 function ensureAudio() {
   if (state.audioContext) return;
 
@@ -1005,12 +1094,15 @@ function ensureAudio() {
   state.arpGain = state.audioContext.createGain();
   state.arpTrimNode = state.audioContext.createGain();
   state.arpTrimNode.gain.value = Math.pow(10, (state.arp.outputGain || 0) / 20);
-  state.padGain.gain.value = state.muted.pad ? 0 : state.volumes.pad;
+  state.padGain.gain.value = state.muted.pad ? 0 : state.volumes.pad * Math.pow(10, 12 / 20);
   state.loopGain.gain.value = state.muted.loop ? 0 : state.volumes.loop;
   state.clickGain.gain.value = state.muted.click ? 0 : state.volumes.click;
   state.drumGain.gain.value = state.muted.drum ? 0 : state.volumes.drum;
   state.arpGain.gain.value = state.muted.arp ? 0 : state.volumes.arp * 0.30;
   state.padGain.connect(state.masterGain);
+  state.padEqNode = createPadEQ(state.audioContext);
+  state.padEqNode.output.connect(state.padGain);
+  state.padEqNode.applyState(state.padEq);
   state.loopGain.connect(state.masterGain);
   state.clickGain.connect(state.masterGain);
   state.drumGain.connect(state.masterGain);
@@ -1108,16 +1200,51 @@ function scheduleMetronomePulse(pulseTime, beatDurationSeconds) {
   if (!state.audioContext || !state.metronomeEnabled) return;
 
   const config = getMeterConfig();
-  const accentMap = config.accentMap;
+  const { accentMap, pulseType, accentGroups } = config;
   const pulseIndex = state.beat - 1;
-  const baseUnitsPerPulse = config.baseUnitCount / config.pulseCount;
-  const baseUnitStart = Math.round(pulseIndex * baseUnitsPerPulse);
-  const subdivisionSeconds = beatDurationSeconds / baseUnitsPerPulse;
 
-  for (let index = 0; index < baseUnitsPerPulse; index += 1) {
-    const accentLevel = accentMap[baseUnitStart + index] || "weak";
-    const time = pulseTime + subdivisionSeconds * index;
-    playMetronomeClick(accentLevel, time);
+  // For irregular meters where accentGroups cluster pulses into musical beats
+  // (e.g. 7/8: pulseCount=7 eighth-note pulses, accentGroups=[2,2,3] → 3 musical beats)
+  const hasMusicalGrouping = pulseType === "irregular" && accentGroups.length < config.pulseCount;
+
+  if (state.clickMode === "pulse") {
+    if (hasMusicalGrouping) {
+      // 7/8 pulse mode: click only at the start of each group (3 clicks at positions 0, 2, 4)
+      let pos = 0;
+      for (let g = 0; g < accentGroups.length; g++) {
+        if (pulseIndex === pos) {
+          playMetronomeClick(g === 0 ? "strong" : "weak", pulseTime);
+          break;
+        }
+        pos += accentGroups[g];
+      }
+    } else {
+      // All other meters: one click per scheduler pulse with accentMap
+      const baseUnitsPerPulse = config.baseUnitCount / config.pulseCount;
+      const baseUnitStart = Math.round(pulseIndex * baseUnitsPerPulse);
+      playMetronomeClick(accentMap[baseUnitStart] || "weak", pulseTime);
+    }
+    return;
+  }
+
+  // Subdivision mode
+  if (pulseType === "compound") {
+    // 6/8, 9/8, 12/8: fire baseUnitsPerPulse clicks per scheduler pulse, use accentMap
+    const baseUnitsPerPulse = config.baseUnitCount / config.pulseCount;
+    const baseUnitStart = Math.round(pulseIndex * baseUnitsPerPulse);
+    const subdivisionSeconds = beatDurationSeconds / baseUnitsPerPulse;
+    for (let i = 0; i < baseUnitsPerPulse; i++) {
+      playMetronomeClick(accentMap[baseUnitStart + i] || "weak", pulseTime + subdivisionSeconds * i);
+    }
+  } else if (pulseType === "irregular") {
+    // 5/4, 7/8: one click per scheduler pulse using accentMap
+    // accentMap has only "strong" on beat 0, rest "weak" → neutral, no grouping imposed
+    playMetronomeClick(accentMap[pulseIndex] || "weak", pulseTime);
+  } else {
+    // Simple (2/4, 3/4, 4/4): 2 eighth notes per pulse, first = pulse accent, second = weak
+    const subdivisionSeconds = beatDurationSeconds / 2;
+    playMetronomeClick(accentMap[pulseIndex] || "weak", pulseTime);
+    playMetronomeClick("weak", pulseTime + subdivisionSeconds);
   }
 }
 
@@ -1252,10 +1379,13 @@ function playHat(time, velocity = 1) {
 function playDrumStep(time = state.audioContext?.currentTime) {
   if (!state.audioContext || !state.drumsEnabled) return null;
 
+  const fullCount = getMeterConfig().defaultGridResolution;
   const stepCount = getCurrentStepCount();
-  const step = state.drumStep % stepCount;
+  const stepFactor = fullCount / stepCount;
+  const localStep = state.drumStep % stepCount;
+  const internalStep = localStep * stepFactor;
   const pattern = getCurrentDrumPattern();
-  const events = getDrumEventsAtStep(pattern, step);
+  const events = getDrumEventsAtStep(pattern, internalStep);
 
   events.forEach((event) => {
     if (event.instrument === "kick") playKick(time, event.velocity);
@@ -1264,7 +1394,7 @@ function playDrumStep(time = state.audioContext?.currentTime) {
   });
 
   state.drumStep = (state.drumStep + 1) % stepCount;
-  return step;
+  return internalStep;
 }
 
 function clearDrumTimers() {
@@ -1273,27 +1403,26 @@ function clearDrumTimers() {
 }
 
 function advanceDrums(pulseTime, beatDurationSeconds) {
+  const config = getMeterConfig();
+  const baseStepsPerPulse = getCurrentStepCount() / config.pulseCount;
+  const rateMultipliers = { half: 0.5, normal: 1, double: 2, quad: 4 };
+  const exactSteps = baseStepsPerPulse * (rateMultipliers[state.drumRate] ?? 1);
   const scheduledSteps = [];
-  if (state.drumRate === "half") {
-    if (state.drumSubStep % 2 === 0) {
+
+  if (exactSteps < 1) {
+    const skip = Math.round(1 / exactSteps);
+    if (state.drumSubStep % skip === 0) {
       scheduledSteps.push({ step: playDrumStep(pulseTime), time: pulseTime });
     }
-    state.drumSubStep = (state.drumSubStep + 1) % 2;
+    state.drumSubStep++;
     return scheduledSteps;
   }
 
-  scheduledSteps.push({ step: playDrumStep(pulseTime), time: pulseTime });
-
-  if (state.drumRate === "double") {
-    const time = pulseTime + beatDurationSeconds / 2;
+  const stepsThisPulse = Math.round(exactSteps);
+  const stepInterval = beatDurationSeconds / stepsThisPulse;
+  for (let i = 0; i < stepsThisPulse; i++) {
+    const time = pulseTime + stepInterval * i;
     scheduledSteps.push({ step: playDrumStep(time), time });
-  }
-
-  if (state.drumRate === "quad") {
-    [1, 2, 3].forEach((part) => {
-      const time = pulseTime + (beatDurationSeconds / 4) * part;
-      scheduledSteps.push({ step: playDrumStep(time), time });
-    });
   }
   return scheduledSteps;
 }
@@ -1678,7 +1807,7 @@ function createPad(scene, isCrossfade = false) {
   delay.connect(spaceFilter);
   spaceFilter.connect(delayGain);
   delayGain.connect(output);
-  output.connect(state.padGain);
+  output.connect(state.padEqNode ? state.padEqNode.input : state.padGain);
 
   nodes.push(
     output,
@@ -1897,7 +2026,6 @@ function stop() {
   state.pendingSceneId = null;
   state.loopEnabled = false;
   state.pendingLoopEnabled = null;
-  state.drumsEnabled = false;
   state.pendingDrumsEnabled = null;
   state.drumStep = 0;
   state.currentUiDrumStep = -1;
@@ -1952,6 +2080,8 @@ function applyScenePresetSettings(sceneId) {
   }
   if (["half", "normal", "double", "quad"].includes(scene.drumRate)) {
     state.drumRate = scene.drumRate;
+  } else {
+    state.drumRate = "normal";
   }
   if (scene.drumVoiceIds) {
     drumInstruments.forEach((instrument) => {
@@ -2004,6 +2134,7 @@ function snapshotArpSettings() {
     lfoTarget: state.arp.lfoTarget,
     octShift: state.arp.octShift,
     outputGain: state.arp.outputGain,
+    naturalAccent: state.arp.naturalAccent,
     customNotes: [...state.arp.customNotes],
   };
 }
@@ -2046,6 +2177,7 @@ function applyArpSceneSettings(sceneId) {
     state.arpLFONode.setTarget(state.arp.lfoTarget);
     state.arpLFONode.setDepth(state.arp.lfoEnabled ? state.arp.lfoDepth / 100 : 0);
   }
+  if (typeof a.naturalAccent === "boolean") state.arp.naturalAccent = a.naturalAccent;
   if (Array.isArray(a.customNotes)) state.arp.customNotes = [...a.customNotes];
 }
 
@@ -2330,7 +2462,6 @@ metronomeToggle.addEventListener("click", async () => {
     setStatus(`Audio bloqueado por iOS. Estado: ${state.audioContext.state}`);
     return;
   }
-
   state.metronomeEnabled = !state.metronomeEnabled;
   setStatus(state.metronomeEnabled ? "Click activado." : "Click desactivado.");
   renderTransport();
@@ -2390,6 +2521,18 @@ drumRateSelect.addEventListener("change", (event) => {
   setStatus(`Drum rate: ${drumRateSelect.options[drumRateSelect.selectedIndex].text}`);
   saveAppState();
   renderTransport();
+});
+
+drumSubdivisionToggle.addEventListener("click", () => {
+  const oldCount = getCurrentStepCount();
+  state.drumSubdivision = state.drumSubdivision === "1/16" ? "1/8" : "1/16";
+  const newCount = getCurrentStepCount();
+  if (state.isPlaying) {
+    state.drumStep = Math.round((state.drumStep / oldCount) * newCount) % newCount;
+  }
+  saveAppState();
+  renderTransport();
+  renderDrumEditor();
 });
 
 drumGrooveSelect.addEventListener("change", (event) => {
@@ -2646,6 +2789,8 @@ const bpmMinus5 = document.querySelector("#bpmMinus5");
 const bpmPlus5 = document.querySelector("#bpmPlus5");
 const bpmModalTap = document.querySelector("#bpmModalTap");
 const bpmModalOk = document.querySelector("#bpmModalOk");
+const clickModePulseBtn = document.querySelector("#clickModePulse");
+const clickModeSubdivisionBtn = document.querySelector("#clickModeSubdivision");
 let modalTapTimes = [];
 
 function openBpmModal() {
@@ -2654,6 +2799,8 @@ function openBpmModal() {
   bpmSlider.value = rounded;
   if (bpmSliderReadout) bpmSliderReadout.textContent = `${rounded} BPM`;
   modalTapTimes = [];
+  clickModePulseBtn.classList.toggle("active", state.clickMode === "pulse");
+  clickModeSubdivisionBtn.classList.toggle("active", state.clickMode === "subdivision");
   bpmModal.hidden = false;
   setTimeout(() => bpmModalInput.focus(), 80);
 }
@@ -2675,6 +2822,22 @@ function applyBpmModal() {
 bpmReadout.addEventListener("click", openBpmModal);
 bpmModalClose.addEventListener("click", closeBpmModal);
 bpmModalOk.addEventListener("click", applyBpmModal);
+
+clickModePulseBtn.addEventListener("click", () => {
+  state.clickMode = "pulse";
+  clickModePulseBtn.classList.add("active");
+  clickModeSubdivisionBtn.classList.remove("active");
+  saveAppState();
+  setStatus("Click: Pulso");
+});
+
+clickModeSubdivisionBtn.addEventListener("click", () => {
+  state.clickMode = "subdivision";
+  clickModeSubdivisionBtn.classList.add("active");
+  clickModePulseBtn.classList.remove("active");
+  saveAppState();
+  setStatus("Click: Subdivisión");
+});
 
 bpmMinus5.addEventListener("click", () => {
   const v = Math.max(48, (parseInt(bpmModalInput.value, 10) || Math.round(state.bpm)) - 5);
@@ -2758,6 +2921,7 @@ const arpFxToggle = document.querySelector("#arpFxToggle");
 const arpFxToggleIcon = document.querySelector("#arpFxToggleIcon");
 const arpFxPanel = document.querySelector("#arpFxPanel");
 const arpFxBypassBtn = document.querySelector("#arpFxBypass");
+const arpNaturalAccentBtn = document.querySelector("#arpNaturalAccent");
 const arpDelayTimeSelect = document.querySelector("#arpDelayTimeSelect");
 const arpOutputGainSlider = document.querySelector("#arpOutputGainSlider");
 const arpOutputGainReadout = document.querySelector("#arpOutputGainReadout");
@@ -2819,6 +2983,7 @@ function renderArp() {
   arpGlitchSlider.value = state.arp.glitch;
   arpGlitchReadout.textContent = `${state.arp.glitch}%`;
   arpDelayTimeSelect.value = state.arp.delayTime;
+  arpNaturalAccentBtn.classList.toggle("active", state.arp.naturalAccent);
   arpLfoOnOff.classList.toggle("active", state.arp.lfoEnabled);
   stepKnobShape?.setValue(state.arp.lfoShape);
   stepKnobType?.setValue(state.arp.lfoTarget);
@@ -2963,6 +3128,82 @@ arpLfoOnOff.addEventListener("click", () => {
   state.arpLFONode?.setDepth(state.arp.lfoEnabled ? state.arp.lfoDepth / 100 : 0);
   arpLfoOnOff.classList.toggle("active", state.arp.lfoEnabled);
 });
+
+// --- Pad EQ knobs ---
+const PAD_EQ_BANDS = [
+  { freq: "80Hz",   idx: 0 },
+  { freq: "150Hz",  idx: 1 },
+  { freq: "250Hz",  idx: 2 },
+  { freq: "400Hz",  idx: 3 },
+  { freq: "800Hz",  idx: 4 },
+  { freq: "2kHz",   idx: 5 },
+  { freq: "3.5kHz", idx: 6 },
+  { freq: "6kHz",   idx: 7 },
+  { freq: "12kHz",  idx: 8 },
+];
+const padEqBandKnobs = PAD_EQ_BANDS.map(({ freq, idx }) => {
+  const k = new Knob({
+    label: freq, min: -12, max: 12, value: state.padEq.bands[idx],
+    format: v => (v >= 0 ? "+" : "") + v.toFixed(1) + " dB",
+    onTap: () => {
+      state.padEq.bandsEnabled[idx] = !state.padEq.bandsEnabled[idx];
+      const on = state.padEq.bandsEnabled[idx];
+      k.el.classList.toggle("knob-bypassed", !on);
+      state.padEqNode?.setBandEnabled(idx, on, state.padEq);
+      saveAppState();
+    },
+    onChange: v => {
+      state.padEq.bands[idx] = v;
+      if (state.padEq.enabled && state.padEq.bandsEnabled[idx]) state.padEqNode?.setBand(idx, v);
+      saveAppState();
+    },
+  });
+  k.el.classList.toggle("knob-bypassed", !state.padEq.bandsEnabled[idx]);
+  padEqKnobsContainer.appendChild(k.el);
+  return k;
+});
+
+const padEqHpfKnob = new Knob({
+  label: "HPF", min: 20, max: 800, value: state.padEq.hpf,
+  format: v => v <= 22 ? "OFF" : `${Math.round(v)} Hz`,
+  onChange: v => {
+    state.padEq.hpf = Math.round(v);
+    if (state.padEq.enabled) state.padEqNode?.setHPF(v);
+    saveAppState();
+  },
+});
+padEqKnobsContainer.appendChild(padEqHpfKnob.el);
+
+const padEqLpfKnob = new Knob({
+  label: "LPF", min: 1000, max: 20000, value: state.padEq.lpf,
+  format: v => v >= 19900 ? "OFF" : v >= 1000 ? `${(v / 1000).toFixed(1)} kHz` : `${Math.round(v)} Hz`,
+  onChange: v => {
+    state.padEq.lpf = Math.round(v);
+    if (state.padEq.enabled) state.padEqNode?.setLPF(v);
+    saveAppState();
+  },
+});
+padEqKnobsContainer.appendChild(padEqLpfKnob.el);
+
+const padEqOutputKnob = new Knob({
+  label: "OUTPUT", min: -12, max: 12, value: state.padEq.output,
+  format: v => (v >= 0 ? "+" : "") + v.toFixed(1) + " dB",
+  onChange: v => {
+    state.padEq.output = v;
+    if (state.padEq.enabled) state.padEqNode?.setOutput(v);
+    saveAppState();
+  },
+});
+padEqKnobsContainer.appendChild(padEqOutputKnob.el);
+
+padEqToggle.addEventListener("click", () => {
+  state.padEq.enabled = !state.padEq.enabled;
+  padEqToggle.classList.toggle("active", state.padEq.enabled);
+  padEqPanel.classList.toggle("collapsed", !state.padEq.enabled);
+  state.padEqNode?.applyState(state.padEq);
+  saveAppState();
+});
+
 arpFxToggle.addEventListener("click", () => {
   const open = !arpFxPanel.classList.contains("collapsed");
   arpFxPanel.classList.toggle("collapsed", open);
@@ -2996,6 +3237,12 @@ arpFxBypassBtn.addEventListener("click", () => {
   applyFxBypass(state.arp.fxBypass);
   arpFxBypassBtn.classList.toggle("active", state.arp.fxBypass);
   arpFxBypassBtn.textContent = state.arp.fxBypass ? "Bypass ON" : "Bypass";
+});
+
+arpNaturalAccentBtn.addEventListener("click", () => {
+  state.arp.naturalAccent = !state.arp.naturalAccent;
+  renderArp();
+  saveAppState();
 });
 arpPiano.addEventListener("click", (e) => {
   const key = e.target.closest("[data-note]");

@@ -1,6 +1,9 @@
-import { ARP_RATE_BEAT_FACTOR, midiToFrequency } from "./arp-fx.js";
+import { ARP_RATE_EIGHTH_FACTOR, midiToFrequency } from "./arp-fx.js";
 import { playArpNote } from "./arp-voices.js";
 import { buildNotePool, getArpNote } from "./arp-engine.js";
+import { getMeterConfig } from "./drum-machine.js";
+
+const ACCENT_VEL = { strong: 1.0, medium: 0.9, weak: 0.8 };
 
 // Glitch probability distribution:
 //   17% silence | 17% octave jump | 8% flam/displacement | 16% intensity variation
@@ -14,8 +17,13 @@ export function scheduleArpSteps(pulseTime, beatDurationSeconds, state, scenes, 
   const _voice = state.arp.voice;
   const _arpOut = state.arpEQNode ? state.arpEQNode.input : (state.arpChorusNode ? state.arpChorusNode.input : state.arpGain);
 
+  // Meter-aware timing: compute the actual eighth-note duration for this meter
+  const config = getMeterConfig(scene.meter || "4/4");
+  const baseUnitsPerPulse = config.baseUnitCount / config.pulseCount;
+  const eighthNoteDuration = beatDurationSeconds / baseUnitsPerPulse;
+
   if (state.arpDelayNode) {
-    state.arpDelayNode.setTime((ARP_RATE_BEAT_FACTOR[state.arp.delayTime] ?? 0.5) * beatDurationSeconds);
+    state.arpDelayNode.setTime((ARP_RATE_EIGHTH_FACTOR[state.arp.delayTime] ?? 1) * eighthNoteDuration);
   }
 
   const { rootMidi, isMinor } = getKeyInfo(scene.key);
@@ -27,15 +35,23 @@ export function scheduleArpSteps(pulseTime, beatDurationSeconds, state, scenes, 
   }
   if (!notePool.length) return;
 
-  const noteDur = (ARP_RATE_BEAT_FACTOR[state.arp.rate] ?? 0.5) * beatDurationSeconds;
+  const noteDur = (ARP_RATE_EIGHTH_FACTOR[state.arp.rate] ?? 1) * eighthNoteDuration;
   const gateDur = Math.max(0.03, noteDur * (state.arp.gate / 100));
   const beatEnd = pulseTime + beatDurationSeconds;
 
+  // Natural accent: first note of each pulse uses the beat's metric weight
+  const pulseAccentLevel = config.accentMap[Math.floor((state.beat - 1) * baseUnitsPerPulse)] || "weak";
+  const pulseAccentFactor = state.arp.naturalAccent ? (ACCENT_VEL[pulseAccentLevel] ?? 0.8) : 1.0;
+  const weakFactor = state.arp.naturalAccent ? 0.8 : 1.0;
+
   if (state.arp.nextNoteTime === null) state.arp.nextNoteTime = pulseTime;
 
+  let subStep = 0;
   while (state.arp.nextNoteTime < beatEnd) {
     const noteTime = state.arp.nextNoteTime;
     state.arp.nextNoteTime += noteDur;
+    const accentFactor = subStep === 0 ? pulseAccentFactor : weakFactor;
+    subStep++;
 
     let midi = getArpNote(notePool, state.arp.stepIndex, state.arp.mode);
     if (midi !== null) midi += (state.arp.octShift || 0) * 12;
@@ -93,6 +109,6 @@ export function scheduleArpSteps(pulseTime, beatDurationSeconds, state, scenes, 
       : time;
     const velMod = h > 0 ? Math.max(0.15, 1 + (Math.random() * 2 - 1) * h * 0.35) : 1;
     const gateMod = h > 0 ? Math.max(0.1, 1 + (Math.random() * 2 - 1) * h * 0.25) : 1;
-    playArpNote(midiToFrequency(midi), hTime, gateDur * gateMod, velMod, _ctx, _voice, _arpOut);
+    playArpNote(midiToFrequency(midi), hTime, gateDur * gateMod, accentFactor * velMod, _ctx, _voice, _arpOut);
   }
 }

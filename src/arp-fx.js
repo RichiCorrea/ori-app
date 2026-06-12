@@ -8,6 +8,14 @@ export const ARP_RATE_BEAT_FACTOR = {
   "1/16": 0.25, "1/16D": 0.375, "1/16T": 1 / 6,
 };
 
+// Factors relative to one eighth note (meter-independent)
+export const ARP_RATE_EIGHTH_FACTOR = {
+  "1/4": 2, "1/4D": 3, "1/4T": 4 / 3,
+  "1/8": 1, "1/8D": 1.5, "1/8T": 2 / 3,
+  "1/16": 0.5, "1/16D": 0.75, "1/16T": 1 / 3,
+  "1/32": 0.25,
+};
+
 export function createJunoChorus(ctx) {
   const input = ctx.createGain();
   const output = ctx.createGain();

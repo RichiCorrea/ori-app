@@ -7,6 +7,12 @@
   "theme_color": "#101418",
   "icons": [
     {
+      "src": "./ORI-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
       "src": "./ORI-APP-Logo.png",
       "sizes": "any",
       "type": "image/png",
