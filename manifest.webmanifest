@@ -1,0 +1,16 @@
+{
+  "name": "ORI",
+  "short_name": "ORI",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#101418",
+  "theme_color": "#101418",
+  "icons": [
+    {
+      "src": "./ORI-APP-Logo.png",
+      "sizes": "any",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

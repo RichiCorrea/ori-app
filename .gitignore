@@ -1,0 +1,6 @@
+node_modules/
+.claude/
+REF/
+server-error.log
+server-output.log
+*.log
