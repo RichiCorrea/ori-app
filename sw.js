@@ -14,6 +14,7 @@ const APP_SHELL = [
   "./src/pad-data.js",
   "./src/knob.js",
   "./ORI-icon.svg",
+  "./ORI-icon.png",
   "./manifest.webmanifest"
 ];
 
