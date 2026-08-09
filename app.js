@@ -14,6 +14,7 @@ import {
 import {
   APP_STATE_ID,
   APP_STATE_STORE_NAME,
+  LOOP_STORE_NAME,
   SAMPLE_STORE_NAME,
   STORAGE_KEY,
   readStorage,
@@ -86,7 +87,51 @@ function normalizePadSettings(settings = {}) {
   };
 }
 
+const LOOP_PAD_DEFAULT_FADE_IN_MS = 15;
+const LOOP_PAD_DEFAULT_FADE_OUT_MS = 250;
+const LOOP_PAD_QUANTIZE_VALUES = ["1_bar", "1_beat", "1_half_beat"];
+
+function normalizeLoopSlot(slot, index) {
+  const type = slot?.type === "oneshot" ? "oneshot" : "loop";
+  return {
+    slotId: slot?.slotId || `loop_${String(index).padStart(2, "0")}`,
+    fileName: slot?.fileName || "",
+    type,
+    triggerMode: slot?.triggerMode === "toggle" || slot?.triggerMode === "oneshot"
+      ? slot.triggerMode
+      : (type === "oneshot" ? "oneshot" : "toggle"),
+    quantize: {
+      enabled: Boolean(slot?.quantize?.enabled),
+      value: LOOP_PAD_QUANTIZE_VALUES.includes(slot?.quantize?.value) ? slot.quantize.value : "1_bar",
+    },
+    volume: typeof slot?.volume === "number" ? Math.max(0, Math.min(1, slot.volume)) : 1,
+    reverse: Boolean(slot?.reverse),
+    fadeInMs: typeof slot?.fadeInMs === "number" ? slot.fadeInMs : LOOP_PAD_DEFAULT_FADE_IN_MS,
+    fadeOutMs: typeof slot?.fadeOutMs === "number" ? slot.fadeOutMs : LOOP_PAD_DEFAULT_FADE_OUT_MS,
+    trim: {
+      startMs: typeof slot?.trim?.startMs === "number" ? slot.trim.startMs : 0,
+      endMs: typeof slot?.trim?.endMs === "number" ? slot.trim.endMs : null,
+    },
+  };
+}
+
+function normalizeLoopSlots(scene) {
+  const gridSize = scene.loopGridSize === 16 ? 16 : 9;
+  const existing = Array.isArray(scene.loopSlots) ? scene.loopSlots : [];
+  const count = Math.max(gridSize, existing.length);
+  const slots = [];
+  for (let i = 0; i < count; i++) {
+    slots.push(normalizeLoopSlot(existing[i], i));
+  }
+  return { gridSize, slots };
+}
+
+function createEmptyLoopSlots(gridSize) {
+  return normalizeLoopSlots({ loopGridSize: gridSize, loopSlots: [] }).slots;
+}
+
 function normalizeScene(scene) {
+  const { gridSize: loopGridSize, slots: loopSlots } = normalizeLoopSlots(scene);
   return {
     ...scene,
     key: scene.key || "C",
@@ -99,7 +144,8 @@ function normalizeScene(scene) {
     drumSampleNames: scene.drumSampleNames || null,
     padSettings: normalizePadSettings(scene.padSettings),
     drumsEnabled: typeof scene.drumsEnabled === "boolean" ? scene.drumsEnabled : false,
-    loopEnabled: typeof scene.loopEnabled === "boolean" ? scene.loopEnabled : false,
+    loopGridSize,
+    loopSlots,
   };
 }
 
@@ -178,6 +224,52 @@ async function loadStoredSamples() {
     }
   } catch (error) {
     // IndexedDB can be unavailable in private modes; generated sounds still work.
+  }
+}
+
+function getLoopSampleKey(sceneId, slotId) {
+  return `${sceneId}:${slotId}`;
+}
+
+function getStoredLoopSampleRecord(sceneId, slotId) {
+  return state.loopPadLibrary[getLoopSampleKey(sceneId, slotId)] || null;
+}
+
+function applyLoopSampleRecordToSlot(slotId, record) {
+  state.loopPadBuffers[slotId] = null;
+  state.loopPadReverseBuffers[slotId] = null;
+  state.loopPadData[slotId] = record?.data || null;
+  state.loopPadNames[slotId] = record?.name || "";
+}
+
+async function saveStoredLoopSample(sceneId, slotId, file, arrayBuffer) {
+  const slotKey = getLoopSampleKey(sceneId, slotId);
+  const record = {
+    slotKey,
+    sceneId,
+    slotId,
+    name: file.name,
+    type: file.type,
+    data: arrayBuffer,
+    updatedAt: Date.now(),
+  };
+  state.loopPadLibrary[slotKey] = record;
+  await withDbStore(LOOP_STORE_NAME, "readwrite", (store) => store.put(record));
+}
+
+async function loadStoredLoopSamples() {
+  try {
+    const records = await withDbStore(LOOP_STORE_NAME, "readonly", (store) => requestToPromise(store.getAll()));
+    records.forEach((record) => {
+      if (!record.data || !record.sceneId || !record.slotId) return;
+      state.loopPadLibrary[getLoopSampleKey(record.sceneId, record.slotId)] = record;
+    });
+    if (records.length > 0) {
+      applyScenePresetSettings(state.sceneId);
+      renderLoopPadGrid();
+    }
+  } catch (error) {
+    // IndexedDB can be unavailable in private modes; loop pads just start empty.
   }
 }
 
@@ -301,6 +393,7 @@ function applyAppSnapshot(snapshot) {
     state.ui.mixerCollapsed = Boolean(snapshot.ui.mixerCollapsed);
     state.ui.padSynthCollapsed = Boolean(snapshot.ui.padSynthCollapsed);
     state.ui.drumEditorCollapsed = Boolean(snapshot.ui.drumEditorCollapsed);
+    state.ui.loopPadsCollapsed = Boolean(snapshot.ui.loopPadsCollapsed);
     state.ui.accentEditMode = Boolean(snapshot.ui.accentEditMode);
   }
 
@@ -332,7 +425,7 @@ function loadAppState() {
 function ensureSceneState() {
   if (sceneOrder.length === 0) {
     const sceneId = "warm";
-    scenes[sceneId] = {
+    scenes[sceneId] = normalizeScene({
       name: "Warm Pad",
       bpm: 72,
       key: "G",
@@ -341,7 +434,7 @@ function ensureSceneState() {
       chord: [196, 246.94, 293.66, 392],
       drumPattern: "soft",
       padSettings: normalizePadSettings({ mood: "prayer" }),
-    };
+    });
     sceneDrumPatterns[sceneId] = createGroovePattern("pop", "4/4");
     sceneOrder = [sceneId];
   }
@@ -397,8 +490,13 @@ const state = {
   pendingSceneId: null,
   metronomeEnabled: false,
   clickMode: "subdivision",
-  loopEnabled: false,
-  pendingLoopEnabled: null,
+  loopGridSize: 9,
+  loopPadLibrary: {},
+  loopPadBuffers: {},
+  loopPadReverseBuffers: {},
+  loopPadData: {},
+  loopPadNames: {},
+  loopPadInstances: {},
   drumsEnabled: false,
   pendingDrumsEnabled: null,
   drumStep: 0,
@@ -491,6 +589,7 @@ const state = {
     mixerCollapsed: false,
     padSynthCollapsed: false,
     drumEditorCollapsed: false,
+    loopPadsCollapsed: false,
     accentEditMode: false,
   },
   padEq: {
@@ -563,7 +662,6 @@ const padEqPanel = document.querySelector("#padEqPanel");
 const padEqKnobsContainer = document.querySelector("#padEqKnobs");
 const playToggle = document.querySelector("#playToggle");
 const metronomeToggle = document.querySelector("#metronomeToggle");
-const loopToggle = document.querySelector("#loopToggle");
 const drumsToggle = document.querySelector("#drumsToggle");
 const drumGrooveSelect = document.querySelector("#drumGrooveSelect");
 const drumKitSelect = document.querySelector("#drumKitSelect");
@@ -602,6 +700,18 @@ const sampleInputs = {
   snare: snareSampleInput,
   hat: hatSampleInput,
 };
+const loopPadsToggle = document.querySelector("#loopPadsToggle");
+const loopPadsToggleIcon = document.querySelector("#loopPadsToggleIcon");
+const loopPadsPanel = document.querySelector("#loopPadsPanel");
+const loopGridSizeSelect = document.querySelector("#loopGridSizeSelect");
+const loopPadGrid = document.querySelector("#loopPadGrid");
+const loopPadMenuBackdrop = document.querySelector("#loopPadMenuBackdrop");
+const loopPadMenu = document.querySelector("#loopPadMenu");
+const loopPadMenuTitle = document.querySelector("#loopPadMenuTitle");
+const loopPadMenuType = document.querySelector("#loopPadMenuType");
+const loopPadMenuLoad = document.querySelector("#loopPadMenuLoad");
+const loopPadMenuClear = document.querySelector("#loopPadMenuClear");
+const loopPadFileInput = document.querySelector("#loopPadFileInput");
 const stepHeader = document.querySelector("#stepHeader");
 const stepContainers = {
   kick: document.querySelector("#kickSteps"),
@@ -629,12 +739,10 @@ function renderTransport() {
     state.metronomeEnabled ? "Metronome on" : "Metronome off"
   );
   metronomeToggle.classList.toggle("active", state.metronomeEnabled);
-  loopToggle.textContent = state.loopEnabled ? "Loop On" : "Loop Off";
   drumsToggle.setAttribute("aria-label", state.drumsEnabled ? "Turn drums off" : "Turn drums on");
   drumsToggle.classList.toggle("active", state.drumsEnabled);
   drumGrooveSelect.value = scenes[state.sceneId]?.groove || "auto";
   drumKitSelect.value = state.drumKitId;
-  loopToggle.classList.toggle("pending-action", state.pendingLoopEnabled !== null);
   drumsToggle.classList.toggle("pending-action", state.pendingDrumsEnabled !== null);
   padVolume.value = Math.round(state.volumes.pad * 100);
   loopVolume.value = Math.round(state.volumes.loop * 100);
@@ -783,6 +891,126 @@ function renderPlayingStep() {
   });
 }
 
+function renderLoopPadGrid() {
+  if (!loopPadGrid) return;
+  loopGridSizeSelect.value = String(state.loopGridSize);
+  loopPadGrid.style.setProperty("--pad-cols", state.loopGridSize === 16 ? 4 : 3);
+  loopPadGrid.innerHTML = "";
+  const scene = scenes[state.sceneId];
+  const slots = (scene?.loopSlots || []).slice(0, state.loopGridSize);
+  slots.forEach((slot) => {
+    const pad = document.createElement("div");
+    pad.className = "loop-pad";
+    pad.dataset.slotId = slot.slotId;
+    pad.setAttribute("role", "button");
+    pad.setAttribute("tabindex", "0");
+    pad.setAttribute("aria-label", slot.fileName || "Slot vacio");
+
+    const label = document.createElement("span");
+    label.className = "loop-pad-label";
+    label.textContent = slot.fileName ? slot.fileName.replace(/\.[^.]+$/, "") : "+";
+    pad.appendChild(label);
+
+    const settingsBtn = document.createElement("button");
+    settingsBtn.className = "loop-pad-settings";
+    settingsBtn.type = "button";
+    settingsBtn.setAttribute("aria-label", "Configurar slot");
+    settingsBtn.textContent = "⋯";
+    settingsBtn.addEventListener("pointerup", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openLoopPadMenu(slot.slotId);
+    });
+    pad.appendChild(settingsBtn);
+
+    pad.addEventListener("pointerup", (event) => {
+      event.preventDefault();
+      handleLoopPadTap(slot.slotId);
+    });
+    pad.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      handleLoopPadTap(slot.slotId);
+    });
+    loopPadGrid.appendChild(pad);
+  });
+  renderLoopPadStates();
+}
+
+function renderLoopPadStates() {
+  if (!loopPadGrid) return;
+  loopPadGrid.querySelectorAll(".loop-pad").forEach((pad) => {
+    const slotId = pad.dataset.slotId;
+    const slot = getCurrentLoopSlot(slotId);
+    pad.classList.toggle("empty", !slot?.fileName);
+    pad.classList.toggle("loaded", Boolean(slot?.fileName));
+    pad.classList.toggle("playing", Boolean(state.loopPadInstances[slotId]));
+  });
+}
+
+function closeLoopPadMenu() {
+  loopPadMenu.classList.add("hidden");
+  loopPadMenuBackdrop.classList.add("hidden");
+  loopPadMenu.dataset.slotId = "";
+}
+
+function openLoopPadMenu(slotId) {
+  const slot = getCurrentLoopSlot(slotId);
+  if (!slot) return;
+
+  loopPadMenu.dataset.slotId = slotId;
+  loopPadMenuTitle.textContent = slot.fileName || "Slot vacio";
+  loopPadMenuType.value = slot.type;
+  loopPadMenu.classList.remove("hidden");
+  loopPadMenuBackdrop.classList.remove("hidden");
+}
+
+function clearLoopPadSlot(slotId, showStatus = true) {
+  stopLoopPad(slotId, 0.03);
+  state.loopPadBuffers[slotId] = null;
+  state.loopPadReverseBuffers[slotId] = null;
+  state.loopPadData[slotId] = null;
+  state.loopPadNames[slotId] = "";
+  const slot = getCurrentLoopSlot(slotId);
+  if (slot) {
+    slot.fileName = "";
+  }
+  saveAppState();
+  renderLoopPadGrid();
+  if (showStatus) setStatus("Slot vacio.");
+}
+
+async function loadLoopPadFile(slotId, file) {
+  if (!file) return;
+  const isUnlocked = await unlockAudio();
+  if (!isUnlocked) {
+    setStatus(`Audio bloqueado por iOS. Estado: ${state.audioContext?.state || "unknown"}`);
+    return;
+  }
+
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    const audioBuffer = await state.audioContext.decodeAudioData(arrayBuffer.slice(0));
+    state.loopPadBuffers[slotId] = audioBuffer;
+    state.loopPadReverseBuffers[slotId] = null;
+    state.loopPadData[slotId] = arrayBuffer;
+    state.loopPadNames[slotId] = file.name;
+    const slot = getCurrentLoopSlot(slotId);
+    if (slot) slot.fileName = file.name;
+    saveStoredLoopSample(state.sceneId, slotId, file, arrayBuffer).catch(() => {
+      setStatus(`${file.name} activo, pero no se pudo guardar permanente.`);
+    });
+    saveAppState();
+    setStatus(`Cargado en ${slotId}: ${file.name}`);
+    renderLoopPadGrid();
+    if (loopPadMenu.dataset.slotId === slotId) {
+      closeLoopPadMenu();
+    }
+  } catch (error) {
+    setStatus(`No pude cargar ese audio en ${slotId}.`);
+  }
+}
+
 function applyStoredUiState() {
   mixerPanel.classList.toggle("collapsed", state.ui.mixerCollapsed);
   mixerToggle.setAttribute("aria-expanded", String(!state.ui.mixerCollapsed));
@@ -795,6 +1023,10 @@ function applyStoredUiState() {
   drumEditorPanel.classList.toggle("collapsed", state.ui.drumEditorCollapsed);
   drumEditorToggle.setAttribute("aria-expanded", String(!state.ui.drumEditorCollapsed));
   drumEditorToggleIcon.classList.toggle("up", !state.ui.drumEditorCollapsed);
+
+  loopPadsPanel.classList.toggle("collapsed", state.ui.loopPadsCollapsed);
+  loopPadsToggle.setAttribute("aria-expanded", String(!state.ui.loopPadsCollapsed));
+  loopPadsToggleIcon.classList.toggle("up", !state.ui.loopPadsCollapsed);
 }
 
 function toggleDrumStep(instrument, step) {
@@ -1027,6 +1259,21 @@ async function decodeDrumSample(instrument) {
 async function decodeStoredDrumSamples() {
   await Promise.all(drumInstruments.map((instrument) => decodeDrumSample(instrument).catch(() => {
     state.drumSampleBuffers[instrument] = null;
+  })));
+}
+
+async function decodeLoopPadSample(slotId) {
+  if (!state.audioContext || state.loopPadBuffers[slotId] || !state.loopPadData[slotId]) return;
+
+  const sourceData = state.loopPadData[slotId];
+  const decodeData = sourceData.slice ? sourceData.slice(0) : sourceData;
+  state.loopPadBuffers[slotId] = await state.audioContext.decodeAudioData(decodeData);
+}
+
+async function decodeStoredLoopPadSamples() {
+  const slots = scenes[state.sceneId]?.loopSlots || [];
+  await Promise.all(slots.map((slot) => decodeLoopPadSample(slot.slotId).catch(() => {
+    state.loopPadBuffers[slot.slotId] = null;
   })));
 }
 
@@ -1340,40 +1587,86 @@ function scheduleMetronomePulse(pulseTime, beatDurationSeconds) {
 
 
 
-function playLoopStep(beat, time = state.audioContext?.currentTime) {
-  if (!state.audioContext || !state.loopEnabled) return;
-
-  const gain = state.audioContext.createGain();
-  const oscillator = state.audioContext.createOscillator();
-  const filter = state.audioContext.createBiquadFilter();
-  const isAccent = beat === 1 || beat === 3;
-
-  gain.gain.setValueAtTime(0.0001, time);
-  gain.gain.exponentialRampToValueAtTime(isAccent ? 0.32 : 0.18, time + 0.01);
-  gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.18);
-
-  filter.type = "lowpass";
-  filter.frequency.setValueAtTime(isAccent ? 900 : 1400, time);
-  filter.Q.setValueAtTime(8, time);
-
-  oscillator.type = beat === 2 || beat === 4 ? "triangle" : "sawtooth";
-  oscillator.frequency.setValueAtTime(isAccent ? 110 : 220, time);
-  oscillator.connect(filter);
-  filter.connect(gain);
-  gain.connect(state.loopGain);
-  oscillator.start(time);
-  oscillator.stop(time + 0.2);
+function getCurrentLoopSlot(slotId) {
+  return scenes[state.sceneId]?.loopSlots?.find((slot) => slot.slotId === slotId) || null;
 }
 
-function applyPendingLoop() {
-  if (state.pendingLoopEnabled === null) return;
+function triggerLoopPad(slotId, time = state.audioContext?.currentTime) {
+  if (!state.audioContext) return;
+  const slot = getCurrentLoopSlot(slotId);
+  const buffer = slot?.reverse ? state.loopPadReverseBuffers[slotId] : state.loopPadBuffers[slotId];
+  if (!slot || !buffer) return;
 
-  state.loopEnabled = state.pendingLoopEnabled;
-  state.pendingLoopEnabled = null;
-  if (scenes[state.sceneId]) scenes[state.sceneId].loopEnabled = state.loopEnabled;
-  saveAppState();
-  renderTransport();
-  setStatus(state.loopEnabled ? "Loop activo desde este compas." : "Loop detenido desde este compas.");
+  // Pads trigger independently of the transport — undo Stop's fade-to-silence on the
+  // shared Loop bus so a pad tapped while stopped is actually audible, not just on Play.
+  applyChannelGain("loop");
+  stopLoopPad(slotId, 0.03); // retrigger always cuts any ringing instance and restarts from the top
+
+  const source = state.audioContext.createBufferSource();
+  const gain = state.audioContext.createGain();
+  source.buffer = buffer;
+  source.loop = slot.type === "loop";
+  source.connect(gain);
+  gain.connect(state.loopGain);
+
+  const fadeInSec = Math.max(0.001, slot.fadeInMs / 1000);
+  gain.gain.setValueAtTime(0.0001, time);
+  gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, slot.volume), time + fadeInSec);
+  source.start(time);
+
+  const instance = { source, gain };
+  if (slot.type === "oneshot") {
+    source.onended = () => {
+      if (state.loopPadInstances[slotId] === instance) delete state.loopPadInstances[slotId];
+      renderLoopPadStates();
+    };
+  }
+  state.loopPadInstances[slotId] = instance;
+  renderLoopPadStates();
+}
+
+function stopLoopPad(slotId, fadeSeconds) {
+  const instance = state.loopPadInstances[slotId];
+  if (!instance || !state.audioContext) return;
+  const slot = getCurrentLoopSlot(slotId);
+  const fade = typeof fadeSeconds === "number" ? fadeSeconds : Math.max(0.001, (slot?.fadeOutMs ?? LOOP_PAD_DEFAULT_FADE_OUT_MS) / 1000);
+  const now = state.audioContext.currentTime;
+  instance.gain.gain.cancelScheduledValues(now);
+  instance.gain.gain.setValueAtTime(Math.max(instance.gain.gain.value, 0.0001), now);
+  instance.gain.gain.exponentialRampToValueAtTime(0.0001, now + fade);
+  window.setTimeout(() => {
+    try { instance.source.stop(); } catch (error) { /* already stopped */ }
+    instance.source.disconnect();
+    instance.gain.disconnect();
+    if (state.loopPadInstances[slotId] === instance) delete state.loopPadInstances[slotId];
+    renderLoopPadStates();
+  }, fade * 1000 + 80);
+  if (state.loopPadInstances[slotId] === instance) delete state.loopPadInstances[slotId];
+  renderLoopPadStates();
+}
+
+function stopAllLoopPads(fadeSeconds) {
+  Object.keys(state.loopPadInstances).forEach((slotId) => stopLoopPad(slotId, fadeSeconds));
+}
+
+async function handleLoopPadTap(slotId) {
+  const slot = getCurrentLoopSlot(slotId);
+  if (!slot) return;
+  if (!slot.fileName) {
+    openLoopPadMenu(slotId);
+    return;
+  }
+  const isUnlocked = await unlockAudio();
+  if (!isUnlocked) {
+    setStatus(`Audio bloqueado por iOS. Estado: ${state.audioContext.state}`);
+    return;
+  }
+  if (slot.triggerMode === "toggle") {
+    if (state.loopPadInstances[slotId]) stopLoopPad(slotId);
+    else triggerLoopPad(slotId);
+  } else {
+    triggerLoopPad(slotId);
+  }
 }
 
 function applyPendingDrums() {
@@ -1973,7 +2266,6 @@ function applyPulseBoundary() {
     state.beat = 1;
     state.bar += 1;
     applyPendingScene();
-    applyPendingLoop();
     applyPendingDrums();
   }
 }
@@ -2006,7 +2298,6 @@ function schedulePulse(pulseTime) {
   const scheduledBeat = state.beat;
   const scheduledBar = state.bar;
   scheduleMetronomePulse(pulseTime, beatDurationSeconds);
-  playLoopStep(state.beat, pulseTime);
   scheduleArpSteps(pulseTime, beatDurationSeconds, state, scenes, getKeyInfo);
   advanceDrums(pulseTime, beatDurationSeconds).forEach(({ step, time }) => {
     scheduleUiDrumStep(step, time);
@@ -2159,6 +2450,7 @@ function pause() {
   clearScheduledUiEvents();
   stopPad(state.activePad, 0.8);
   state.activePad = null;
+  stopAllLoopPads();
   updateMediaSession();
   releaseWakeLock();
   setStatus("Pausado.");
@@ -2173,8 +2465,6 @@ function stop() {
   state.displayBar = 1;
   state.displayBeat = 1;
   state.pendingSceneId = null;
-  state.loopEnabled = false;
-  state.pendingLoopEnabled = null;
   state.pendingDrumsEnabled = null;
   state.drumStep = 0;
   state.currentUiDrumStep = -1;
@@ -2228,7 +2518,18 @@ function applyScenePresetSettings(sceneId) {
     state.drumKitId = scene.drumKitId;
   }
   state.drumsEnabled = typeof scene.drumsEnabled === "boolean" ? scene.drumsEnabled : false;
-  state.loopEnabled = typeof scene.loopEnabled === "boolean" ? scene.loopEnabled : false;
+  stopAllLoopPads(1.4); // same crossfade duration as the pad engine (startPadForScene/stopPad)
+  state.loopGridSize = scene.loopGridSize === 16 ? 16 : 9;
+  (scene.loopSlots || []).forEach((slot) => {
+    const record = slot.fileName ? getStoredLoopSampleRecord(sceneId, slot.slotId) : null;
+    applyLoopSampleRecordToSlot(slot.slotId, record);
+    if (state.audioContext && record) {
+      decodeLoopPadSample(slot.slotId).catch(() => {
+        state.loopPadBuffers[slot.slotId] = null;
+      });
+    }
+  });
+  renderLoopPadGrid();
   if (["half", "normal", "double", "quad"].includes(scene.drumRate)) {
     state.drumRate = scene.drumRate;
   } else {
@@ -2512,7 +2813,8 @@ function createNewScene() {
     drumSampleNames: { ...state.drumSampleNames },
     padSettings: normalizePadSettings(PAD_DEFAULTS),
     drumsEnabled: false,
-    loopEnabled: false,
+    loopGridSize: 9,
+    loopSlots: createEmptyLoopSlots(9),
     ...(currentKey === "C" && { arpSettings: snapshotArpSettings() }),
   };
   sceneDrumPatterns[sceneId] = createGroovePattern("auto", "4/4");
@@ -2589,6 +2891,7 @@ function duplicateCurrentScene() {
     drumSampleNames: { ...(sourceScene.drumSampleNames || state.drumSampleNames) },
     padSettings: normalizePadSettings(sourceScene.padSettings),
     arpSettings: sourceScene.arpSettings ? { ...sourceScene.arpSettings, customNotes: [...(sourceScene.arpSettings.customNotes || [])] } : snapshotArpSettings(),
+    loopSlots: (sourceScene.loopSlots || []).map((slot) => ({ ...slot, quantize: { ...slot.quantize }, trim: { ...slot.trim } })),
     name: `${sourceScene.name} Copy`,
   };
   sceneDrumPatterns[sceneId] = clonePattern(getCurrentDrumPattern(), scenes[state.sceneId].meter);
@@ -2629,28 +2932,6 @@ metronomeToggle.addEventListener("click", async () => {
   renderTransport();
 });
 
-loopToggle.addEventListener("click", async () => {
-  const isUnlocked = await unlockAudio();
-  if (!isUnlocked) {
-    setStatus(`Audio bloqueado por iOS. Estado: ${state.audioContext.state}`);
-    return;
-  }
-
-  const nextLoopState = !state.loopEnabled;
-  if (!state.isPlaying) {
-    state.loopEnabled = nextLoopState;
-    state.pendingLoopEnabled = null;
-    if (scenes[state.sceneId]) scenes[state.sceneId].loopEnabled = state.loopEnabled;
-    saveAppState();
-    setStatus(state.loopEnabled ? "Loop listo." : "Loop apagado.");
-    renderTransport();
-    return;
-  }
-
-  state.pendingLoopEnabled = nextLoopState;
-  setStatus(nextLoopState ? "Loop pendiente para proximo compas." : "Loop se apagara en proximo compas.");
-  renderTransport();
-});
 
 drumsToggle.addEventListener("click", async () => {
   const isUnlocked = await unlockAudio();
@@ -2909,6 +3190,71 @@ drumEditorToggle.addEventListener("click", () => {
   drumEditorToggleIcon.classList.toggle("up", !isCollapsed);
   saveAppState();
 });
+
+loopPadsToggle.addEventListener("click", () => {
+  const isCollapsed = loopPadsPanel.classList.toggle("collapsed");
+  state.ui.loopPadsCollapsed = isCollapsed;
+  loopPadsToggle.setAttribute("aria-expanded", String(!isCollapsed));
+  loopPadsToggleIcon.classList.toggle("up", !isCollapsed);
+  saveAppState();
+});
+
+loopGridSizeSelect.addEventListener("change", () => {
+  const nextSize = Number(loopGridSizeSelect.value) === 16 ? 16 : 9;
+  state.loopGridSize = nextSize;
+  const scene = scenes[state.sceneId];
+  if (scene) {
+    scene.loopGridSize = nextSize;
+    if (scene.loopSlots.length < nextSize) {
+      scene.loopSlots = normalizeLoopSlots(scene).slots;
+    }
+  }
+  saveAppState();
+  renderLoopPadGrid();
+});
+
+loopPadMenu.addEventListener("click", (event) => {
+  event.stopPropagation();
+});
+
+loopPadMenuBackdrop.addEventListener("click", closeLoopPadMenu);
+
+loopPadMenuType.addEventListener("change", () => {
+  const slotId = loopPadMenu.dataset.slotId;
+  const slot = getCurrentLoopSlot(slotId);
+  if (!slot) return;
+  slot.type = loopPadMenuType.value === "oneshot" ? "oneshot" : "loop";
+  slot.triggerMode = slot.type === "oneshot" ? "oneshot" : "toggle";
+  saveAppState();
+});
+
+loopPadMenuLoad.addEventListener("click", () => {
+  const slotId = loopPadMenu.dataset.slotId;
+  if (!slotId) return;
+  loopPadFileInput.dataset.slotId = slotId;
+  loopPadFileInput.click();
+});
+
+loopPadMenuClear.addEventListener("click", () => {
+  const slotId = loopPadMenu.dataset.slotId;
+  if (!slotId) return;
+  clearLoopPadSlot(slotId);
+  loopPadMenuTitle.textContent = "Slot vacio";
+});
+
+loopPadFileInput.addEventListener("change", (event) => {
+  const slotId = loopPadFileInput.dataset.slotId;
+  const file = event.target.files[0];
+  if (!file) {
+    setStatus("No se eligio ningun archivo.");
+    return;
+  }
+  setStatus(`Archivo elegido: ${file.name}. Cargando...`);
+  if (slotId) loadLoopPadFile(slotId, file);
+  event.target.value = "";
+});
+
+document.addEventListener("click", closeLoopPadMenu);
 
 resetPattern.addEventListener("click", resetCurrentDrumPattern);
 
@@ -3529,11 +3875,14 @@ async function initializeApp() {
   await loadStoredAppState();
   loadAppState();
   ensureSceneState();
+  state.loopGridSize = scenes[state.sceneId]?.loopGridSize === 16 ? 16 : 9;
   renderDrumEditor();
   renderSceneButtons();
   applyStoredUiState();
   renderTransport();
+  renderLoopPadGrid();
   loadStoredSamples();
+  loadStoredLoopSamples();
 }
 
 initializeApp();

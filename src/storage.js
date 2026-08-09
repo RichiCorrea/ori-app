@@ -1,7 +1,8 @@
 export const STORAGE_KEY = "worshipflow.prototype.v1";
 export const SAMPLE_DB_NAME = "worshipflow-samples";
-export const SAMPLE_DB_VERSION = 3;
+export const SAMPLE_DB_VERSION = 4;
 export const SAMPLE_STORE_NAME = "drumSamples";
+export const LOOP_STORE_NAME = "loopSamples";
 export const APP_STATE_STORE_NAME = "appState";
 export const APP_STATE_ID = "current";
 
@@ -52,6 +53,9 @@ export function openAppDb() {
       }
       if (!db.objectStoreNames.contains(APP_STATE_STORE_NAME)) {
         db.createObjectStore(APP_STATE_STORE_NAME, { keyPath: "id" });
+      }
+      if (!db.objectStoreNames.contains(LOOP_STORE_NAME)) {
+        db.createObjectStore(LOOP_STORE_NAME, { keyPath: "slotKey" });
       }
     };
     request.onsuccess = () => resolve(request.result);

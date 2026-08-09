@@ -7,7 +7,7 @@
     <title>ORI</title>
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="apple-touch-icon" href="./ORI-icon.png" />
-    <link rel="stylesheet" href="./styles.css?v=127" />
+    <link rel="stylesheet" href="./styles.css?v=132" />
   </head>
   <body>
     <main class="app">
@@ -115,9 +115,42 @@
 
       <section class="controls">
         <div class="button-row">
-          <button id="loopToggle" type="button">Loop Off</button>
           <button id="tapTempo" type="button">Tap</button>
           <button id="voiceModeToggle" class="voice-toggle" type="button" aria-pressed="false">+Voice</button>
+        </div>
+      </section>
+
+      <section class="drum-editor">
+        <div class="section-toolbar">
+          <div class="section-title-group">
+            <button id="loopPadsToggle" class="section-toggle" type="button" aria-expanded="true">
+              <span>Loop</span>
+              <span id="loopPadsToggleIcon" class="chevron up" aria-hidden="true"></span>
+            </button>
+          </div>
+          <div class="drum-toolbar-controls">
+            <label class="kit-control">
+              <span>Grid</span>
+              <select id="loopGridSizeSelect">
+                <option value="9">3x3</option>
+                <option value="16">4x4</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        <div id="loopPadsPanel" class="loop-pads-panel">
+          <div id="loopPadGrid" class="loop-pad-grid"></div>
+          <div id="loopPadMenuBackdrop" class="loop-pad-menu-backdrop hidden"></div>
+          <div id="loopPadMenu" class="instrument-menu hidden">
+            <strong id="loopPadMenuTitle">Slot vacio</strong>
+            <select id="loopPadMenuType">
+              <option value="loop">Loop</option>
+              <option value="oneshot">One-shot</option>
+            </select>
+            <button id="loopPadMenuLoad" class="sample-load" type="button">Cargar</button>
+            <button id="loopPadMenuClear" class="sample-load" type="button">Quitar</button>
+          </div>
+          <input id="loopPadFileInput" class="sample-input" type="file" accept="audio/*,audio/mpeg,audio/wav,audio/wave,audio/x-wav,audio/mp4,audio/x-m4a,audio/aac" />
         </div>
       </section>
 
@@ -498,6 +531,6 @@
       </div>
     </div>
 
-    <script type="module" src="./app.js?v=127"></script>
+    <script type="module" src="./app.js?v=132"></script>
   </body>
 </html>
