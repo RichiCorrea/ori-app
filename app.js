@@ -497,6 +497,7 @@ const state = {
   loopPadData: {},
   loopPadNames: {},
   loopPadInstances: {},
+  loopPadPendingStart: {},
   drumsEnabled: false,
   pendingDrumsEnabled: null,
   drumStep: 0,
@@ -709,6 +710,8 @@ const loopPadMenuBackdrop = document.querySelector("#loopPadMenuBackdrop");
 const loopPadMenu = document.querySelector("#loopPadMenu");
 const loopPadMenuTitle = document.querySelector("#loopPadMenuTitle");
 const loopPadMenuType = document.querySelector("#loopPadMenuType");
+const loopPadMenuQuantize = document.querySelector("#loopPadMenuQuantize");
+const loopPadMenuQuantizeValue = document.querySelector("#loopPadMenuQuantizeValue");
 const loopPadMenuLoad = document.querySelector("#loopPadMenuLoad");
 const loopPadMenuClear = document.querySelector("#loopPadMenuClear");
 const loopPadFileInput = document.querySelector("#loopPadFileInput");
@@ -945,6 +948,7 @@ function renderLoopPadStates() {
     pad.classList.toggle("empty", !slot?.fileName);
     pad.classList.toggle("loaded", Boolean(slot?.fileName));
     pad.classList.toggle("playing", Boolean(state.loopPadInstances[slotId]));
+    pad.classList.toggle("pending-action", Boolean(state.loopPadPendingStart[slotId]));
   });
 }
 
@@ -961,12 +965,20 @@ function openLoopPadMenu(slotId) {
   loopPadMenu.dataset.slotId = slotId;
   loopPadMenuTitle.textContent = slot.fileName || "Slot vacio";
   loopPadMenuType.value = slot.type;
+  loopPadMenuQuantize.classList.toggle("active", slot.quantize.enabled);
+  loopPadMenuQuantizeValue.value = slot.quantize.value;
+  loopPadMenuQuantizeValue.disabled = !slot.quantize.enabled;
   loopPadMenu.classList.remove("hidden");
   loopPadMenuBackdrop.classList.remove("hidden");
 }
 
+function quantizeLabel(value) {
+  return { "1_bar": "1 compas", "1_beat": "1 beat", "1_half_beat": "medio beat" }[value] || value;
+}
+
 function clearLoopPadSlot(slotId, showStatus = true) {
   stopLoopPad(slotId, 0.03);
+  delete state.loopPadPendingStart[slotId];
   state.loopPadBuffers[slotId] = null;
   state.loopPadReverseBuffers[slotId] = null;
   state.loopPadData[slotId] = null;
@@ -1478,6 +1490,8 @@ async function unlockAudio() {
     await state.audioContext.resume();
   }
   await decodeStoredDrumSamples();
+  await decodeStoredLoopPadSamples();
+  renderLoopPadStates();
 
   // Some browsers only grant Web MIDI access from within a real user gesture
   // (Play/on-off buttons all funnel through unlockAudio), so request it here
@@ -1661,12 +1675,44 @@ async function handleLoopPadTap(slotId) {
     setStatus(`Audio bloqueado por iOS. Estado: ${state.audioContext.state}`);
     return;
   }
-  if (slot.triggerMode === "toggle") {
-    if (state.loopPadInstances[slotId]) stopLoopPad(slotId);
+
+  if (state.loopPadInstances[slotId]) {
+    // Already sounding: Toggle stops immediately (quantize only ever applies to the start);
+    // One-shot retriggers immediately, cutting the ringing copy and restarting from the top.
+    if (slot.triggerMode === "toggle") stopLoopPad(slotId);
     else triggerLoopPad(slotId);
+    return;
+  }
+
+  if (state.loopPadPendingStart[slotId]) {
+    delete state.loopPadPendingStart[slotId];
+    renderLoopPadStates();
+    setStatus(`Disparo cancelado: ${slotId}.`);
+    return;
+  }
+
+  if (slot.quantize.enabled && state.isPlaying) {
+    queueLoopPadTrigger(slotId, slot.quantize.value);
+    setStatus(`En cola (${quantizeLabel(slot.quantize.value)}): ${slotId}.`);
   } else {
     triggerLoopPad(slotId);
   }
+}
+
+function queueLoopPadTrigger(slotId, quantizeValue) {
+  state.loopPadPendingStart[slotId] = quantizeValue;
+  renderLoopPadStates();
+}
+
+function resolvePendingLoopPadTriggers(pulseTime, beatDurationSeconds) {
+  if (Object.keys(state.loopPadPendingStart).length === 0) return;
+  Object.entries(state.loopPadPendingStart).forEach(([slotId, quantizeValue]) => {
+    if (quantizeValue === "1_bar" && state.beat !== 1) return;
+    const triggerTime = quantizeValue === "1_half_beat" ? pulseTime + beatDurationSeconds / 2 : pulseTime;
+    delete state.loopPadPendingStart[slotId];
+    triggerLoopPad(slotId, triggerTime);
+  });
+  renderLoopPadStates();
 }
 
 function applyPendingDrums() {
@@ -2298,6 +2344,7 @@ function schedulePulse(pulseTime) {
   const scheduledBeat = state.beat;
   const scheduledBar = state.bar;
   scheduleMetronomePulse(pulseTime, beatDurationSeconds);
+  resolvePendingLoopPadTriggers(pulseTime, beatDurationSeconds);
   scheduleArpSteps(pulseTime, beatDurationSeconds, state, scenes, getKeyInfo);
   advanceDrums(pulseTime, beatDurationSeconds).forEach(({ step, time }) => {
     scheduleUiDrumStep(step, time);
@@ -2466,6 +2513,7 @@ function stop() {
   state.displayBeat = 1;
   state.pendingSceneId = null;
   state.pendingDrumsEnabled = null;
+  state.loopPadPendingStart = {};
   state.drumStep = 0;
   state.currentUiDrumStep = -1;
   state.drumSubStep = 0;
@@ -2473,6 +2521,7 @@ function stop() {
   state.arp.nextNoteTime = null;
   renderSceneButtons();
   renderTransport();
+  renderLoopPadStates();
 }
 
 function setBpm(bpm, restartScheduler = true) {
@@ -2519,6 +2568,7 @@ function applyScenePresetSettings(sceneId) {
   }
   state.drumsEnabled = typeof scene.drumsEnabled === "boolean" ? scene.drumsEnabled : false;
   stopAllLoopPads(1.4); // same crossfade duration as the pad engine (startPadForScene/stopPad)
+  state.loopPadPendingStart = {};
   state.loopGridSize = scene.loopGridSize === 16 ? 16 : 9;
   (scene.loopSlots || []).forEach((slot) => {
     const record = slot.fileName ? getStoredLoopSampleRecord(sceneId, slot.slotId) : null;
@@ -3225,6 +3275,24 @@ loopPadMenuType.addEventListener("change", () => {
   if (!slot) return;
   slot.type = loopPadMenuType.value === "oneshot" ? "oneshot" : "loop";
   slot.triggerMode = slot.type === "oneshot" ? "oneshot" : "toggle";
+  saveAppState();
+});
+
+loopPadMenuQuantize.addEventListener("click", () => {
+  const slotId = loopPadMenu.dataset.slotId;
+  const slot = getCurrentLoopSlot(slotId);
+  if (!slot) return;
+  slot.quantize.enabled = !slot.quantize.enabled;
+  loopPadMenuQuantize.classList.toggle("active", slot.quantize.enabled);
+  loopPadMenuQuantizeValue.disabled = !slot.quantize.enabled;
+  saveAppState();
+});
+
+loopPadMenuQuantizeValue.addEventListener("change", () => {
+  const slotId = loopPadMenu.dataset.slotId;
+  const slot = getCurrentLoopSlot(slotId);
+  if (!slot) return;
+  slot.quantize.value = LOOP_PAD_QUANTIZE_VALUES.includes(loopPadMenuQuantizeValue.value) ? loopPadMenuQuantizeValue.value : "1_bar";
   saveAppState();
 });
 

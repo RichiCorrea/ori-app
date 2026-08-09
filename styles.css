@@ -841,9 +841,15 @@ button {
   grid-template-columns: 1fr 1fr;
 }
 
-#loopPadMenu strong,
-#loopPadMenu select {
+#loopPadMenuTitle,
+#loopPadMenuType {
   grid-column: 1 / -1;
+}
+
+#loopPadMenuQuantize.active {
+  border-color: rgba(240, 179, 91, 0.95);
+  background: #f0b35b;
+  color: #15120e;
 }
 
 .loop-pad-settings {

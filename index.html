@@ -7,7 +7,7 @@
     <title>ORI</title>
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="apple-touch-icon" href="./ORI-icon.png" />
-    <link rel="stylesheet" href="./styles.css?v=132" />
+    <link rel="stylesheet" href="./styles.css?v=134" />
   </head>
   <body>
     <main class="app">
@@ -146,6 +146,12 @@
             <select id="loopPadMenuType">
               <option value="loop">Loop</option>
               <option value="oneshot">One-shot</option>
+            </select>
+            <button id="loopPadMenuQuantize" class="utility-button" type="button">Quantize</button>
+            <select id="loopPadMenuQuantizeValue">
+              <option value="1_bar">1 compas</option>
+              <option value="1_beat">1 beat</option>
+              <option value="1_half_beat">Medio beat</option>
             </select>
             <button id="loopPadMenuLoad" class="sample-load" type="button">Cargar</button>
             <button id="loopPadMenuClear" class="sample-load" type="button">Quitar</button>
@@ -531,6 +537,6 @@
       </div>
     </div>
 
-    <script type="module" src="./app.js?v=132"></script>
+    <script type="module" src="./app.js?v=134"></script>
   </body>
 </html>
