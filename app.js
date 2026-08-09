@@ -3231,9 +3231,27 @@ function deleteCurrentScene() {
   setStatus(`Escena borrada: ${sceneName}`);
 }
 
-function duplicateCurrentScene() {
+async function duplicateSceneSamples(sourceSceneId, targetSceneId) {
+  let failed = false;
+  const copies = [];
+  drumInstruments.forEach((instrument) => {
+    const sourceRecord = state.drumSampleLibrary[getSampleKey(sourceSceneId, instrument)];
+    if (!sourceRecord?.data) return;
+    copies.push(saveStoredSample(targetSceneId, instrument, { name: sourceRecord.name, type: sourceRecord.type }, sourceRecord.data).catch(() => { failed = true; }));
+  });
+  (scenes[sourceSceneId]?.loopSlots || []).forEach((slot) => {
+    const sourceRecord = state.loopPadLibrary[getLoopSampleKey(sourceSceneId, slot.slotId)];
+    if (!sourceRecord?.data) return;
+    copies.push(saveStoredLoopSample(targetSceneId, slot.slotId, { name: sourceRecord.name, type: sourceRecord.type }, sourceRecord.data).catch(() => { failed = true; }));
+  });
+  await Promise.all(copies);
+  return failed;
+}
+
+async function duplicateCurrentScene() {
   const sourceScene = scenes[state.sceneId];
   if (!sourceScene) return;
+  const sourceSceneId = state.sceneId;
 
   const sceneId = `scene-${Date.now()}`;
   scenes[sceneId] = {
@@ -3248,6 +3266,7 @@ function duplicateCurrentScene() {
     name: `${sourceScene.name} Copy`,
   };
   sceneDrumPatterns[sceneId] = clonePattern(getCurrentDrumPattern(), scenes[state.sceneId].meter);
+  const samplesCopyFailed = await duplicateSceneSamples(sourceSceneId, sceneId);
 
   const currentIndex = sceneOrder.indexOf(state.sceneId);
   sceneOrder.splice(currentIndex + 1, 0, sceneId);
@@ -3262,7 +3281,9 @@ function duplicateCurrentScene() {
   saveAppState();
   renderSceneButtons();
   renderDrumEditor();
-  setStatus(`Escena duplicada: ${scenes[sceneId].name}`);
+  setStatus(samplesCopyFailed
+    ? `Escena duplicada: ${scenes[sceneId].name} (algunos samples no se pudieron copiar).`
+    : `Escena duplicada: ${scenes[sceneId].name}`);
 }
 
 playToggle.addEventListener("click", () => {
