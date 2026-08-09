@@ -1753,20 +1753,21 @@ async function unlockAudio() {
   ensureAudio();
   if (!state.audioContext) return false;
 
+  // WebKit can revoke "real user gesture" activation after just a couple of
+  // awaits, and a gesture-gated requestMIDIAccess() call made without it can
+  // hang forever (no resolve, no reject) instead of erroring — so this must
+  // fire before any await in this function, not after the sample decoding.
+  if (!state.midiSetupDone) {
+    state.midiSetupDone = true;
+    setupMidiInput();
+  }
+
   if (state.audioContext.state !== "running") {
     await state.audioContext.resume();
   }
   await decodeStoredDrumSamples();
   await decodeStoredLoopPadSamples();
   renderLoopPadStates();
-
-  // Some browsers only grant Web MIDI access from within a real user gesture
-  // (Play/on-off buttons all funnel through unlockAudio), so request it here
-  // instead of at page load.
-  if (!state.midiSetupDone) {
-    state.midiSetupDone = true;
-    setupMidiInput();
-  }
 
   // Starting an oscillator on a user gesture is what actually satisfies iOS's
   // autoplay-unlock requirement — it doesn't need to be audible. Kept silent
