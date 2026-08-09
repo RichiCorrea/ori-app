@@ -709,9 +709,17 @@ const loopPadGrid = document.querySelector("#loopPadGrid");
 const loopPadMenuBackdrop = document.querySelector("#loopPadMenuBackdrop");
 const loopPadMenu = document.querySelector("#loopPadMenu");
 const loopPadMenuTitle = document.querySelector("#loopPadMenuTitle");
+const loopPadMenuClose = document.querySelector("#loopPadMenuClose");
 const loopPadMenuType = document.querySelector("#loopPadMenuType");
 const loopPadMenuQuantize = document.querySelector("#loopPadMenuQuantize");
 const loopPadMenuQuantizeValue = document.querySelector("#loopPadMenuQuantizeValue");
+const loopPadMenuVolume = document.querySelector("#loopPadMenuVolume");
+const loopPadMenuVolumeReadout = document.querySelector("#loopPadMenuVolumeReadout");
+const loopPadMenuReverse = document.querySelector("#loopPadMenuReverse");
+const loopPadMenuFadeIn = document.querySelector("#loopPadMenuFadeIn");
+const loopPadMenuFadeInReadout = document.querySelector("#loopPadMenuFadeInReadout");
+const loopPadMenuFadeOut = document.querySelector("#loopPadMenuFadeOut");
+const loopPadMenuFadeOutReadout = document.querySelector("#loopPadMenuFadeOutReadout");
 const loopPadMenuLoad = document.querySelector("#loopPadMenuLoad");
 const loopPadMenuClear = document.querySelector("#loopPadMenuClear");
 const loopPadFileInput = document.querySelector("#loopPadFileInput");
@@ -968,12 +976,47 @@ function openLoopPadMenu(slotId) {
   loopPadMenuQuantize.classList.toggle("active", slot.quantize.enabled);
   loopPadMenuQuantizeValue.value = slot.quantize.value;
   loopPadMenuQuantizeValue.disabled = !slot.quantize.enabled;
+  loopPadMenuVolume.value = Math.round(slot.volume * 100);
+  loopPadMenuVolumeReadout.textContent = `${Math.round(slot.volume * 100)}%`;
+  loopPadMenuReverse.classList.toggle("active", slot.reverse);
+  loopPadMenuFadeIn.value = slot.fadeInMs;
+  loopPadMenuFadeInReadout.textContent = `${slot.fadeInMs} ms`;
+  loopPadMenuFadeOut.value = slot.fadeOutMs;
+  loopPadMenuFadeOutReadout.textContent = `${slot.fadeOutMs} ms`;
   loopPadMenu.classList.remove("hidden");
   loopPadMenuBackdrop.classList.remove("hidden");
 }
 
 function quantizeLabel(value) {
   return { "1_bar": "1 compas", "1_beat": "1 beat", "1_half_beat": "medio beat" }[value] || value;
+}
+
+function toggleLoopPadReverse(slotId) {
+  const slot = getCurrentLoopSlot(slotId);
+  if (!slot) return;
+  slot.reverse = !slot.reverse;
+  stopLoopPad(slotId, 0.03); // direction change mid-playback isn't meaningful; the next trigger picks up the new direction
+  saveAppState();
+}
+
+function updateLoopPadVolume(slotId, value) {
+  const slot = getCurrentLoopSlot(slotId);
+  if (!slot) return;
+  slot.volume = Math.max(0, Math.min(1, Number(value) / 100));
+  const instance = state.loopPadInstances[slotId];
+  if (instance && state.audioContext) {
+    instance.gain.gain.setTargetAtTime(slot.volume, state.audioContext.currentTime, 0.02);
+  }
+  saveAppState();
+}
+
+function updateLoopPadFadeSetting(slotId, edge, ms) {
+  const slot = getCurrentLoopSlot(slotId);
+  if (!slot) return;
+  const clamped = Math.max(10, Math.min(5000, Number(ms)));
+  if (edge === "in") slot.fadeInMs = clamped;
+  else slot.fadeOutMs = clamped;
+  saveAppState();
 }
 
 function clearLoopPadSlot(slotId, showStatus = true) {
@@ -1605,11 +1648,30 @@ function getCurrentLoopSlot(slotId) {
   return scenes[state.sceneId]?.loopSlots?.find((slot) => slot.slotId === slotId) || null;
 }
 
+function buildReversedBuffer(audioBuffer) {
+  const reversed = state.audioContext.createBuffer(audioBuffer.numberOfChannels, audioBuffer.length, audioBuffer.sampleRate);
+  for (let channel = 0; channel < audioBuffer.numberOfChannels; channel++) {
+    const source = audioBuffer.getChannelData(channel);
+    const dest = reversed.getChannelData(channel);
+    for (let i = 0; i < source.length; i++) {
+      dest[i] = source[source.length - 1 - i];
+    }
+  }
+  return reversed;
+}
+
 function triggerLoopPad(slotId, time = state.audioContext?.currentTime) {
   if (!state.audioContext) return;
   const slot = getCurrentLoopSlot(slotId);
-  const buffer = slot?.reverse ? state.loopPadReverseBuffers[slotId] : state.loopPadBuffers[slotId];
-  if (!slot || !buffer) return;
+  if (!slot) return;
+  let buffer = state.loopPadBuffers[slotId];
+  if (slot.reverse && buffer) {
+    if (!state.loopPadReverseBuffers[slotId]) {
+      state.loopPadReverseBuffers[slotId] = buildReversedBuffer(buffer);
+    }
+    buffer = state.loopPadReverseBuffers[slotId];
+  }
+  if (!buffer) return;
 
   // Pads trigger independently of the transport — undo Stop's fade-to-silence on the
   // shared Loop bus so a pad tapped while stopped is actually audible, not just on Play.
@@ -3268,6 +3330,7 @@ loopPadMenu.addEventListener("click", (event) => {
 });
 
 loopPadMenuBackdrop.addEventListener("click", closeLoopPadMenu);
+loopPadMenuClose.addEventListener("click", closeLoopPadMenu);
 
 loopPadMenuType.addEventListener("change", () => {
   const slotId = loopPadMenu.dataset.slotId;
@@ -3294,6 +3357,35 @@ loopPadMenuQuantizeValue.addEventListener("change", () => {
   if (!slot) return;
   slot.quantize.value = LOOP_PAD_QUANTIZE_VALUES.includes(loopPadMenuQuantizeValue.value) ? loopPadMenuQuantizeValue.value : "1_bar";
   saveAppState();
+});
+
+loopPadMenuVolume.addEventListener("input", () => {
+  const slotId = loopPadMenu.dataset.slotId;
+  if (!slotId) return;
+  updateLoopPadVolume(slotId, loopPadMenuVolume.value);
+  loopPadMenuVolumeReadout.textContent = `${loopPadMenuVolume.value}%`;
+});
+
+loopPadMenuReverse.addEventListener("click", () => {
+  const slotId = loopPadMenu.dataset.slotId;
+  if (!slotId) return;
+  toggleLoopPadReverse(slotId);
+  const slot = getCurrentLoopSlot(slotId);
+  loopPadMenuReverse.classList.toggle("active", Boolean(slot?.reverse));
+});
+
+loopPadMenuFadeIn.addEventListener("input", () => {
+  const slotId = loopPadMenu.dataset.slotId;
+  if (!slotId) return;
+  updateLoopPadFadeSetting(slotId, "in", loopPadMenuFadeIn.value);
+  loopPadMenuFadeInReadout.textContent = `${loopPadMenuFadeIn.value} ms`;
+});
+
+loopPadMenuFadeOut.addEventListener("input", () => {
+  const slotId = loopPadMenu.dataset.slotId;
+  if (!slotId) return;
+  updateLoopPadFadeSetting(slotId, "out", loopPadMenuFadeOut.value);
+  loopPadMenuFadeOutReadout.textContent = `${loopPadMenuFadeOut.value} ms`;
 });
 
 loopPadMenuLoad.addEventListener("click", () => {

@@ -7,7 +7,7 @@
     <title>ORI</title>
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="apple-touch-icon" href="./ORI-icon.png" />
-    <link rel="stylesheet" href="./styles.css?v=134" />
+    <link rel="stylesheet" href="./styles.css?v=138" />
   </head>
   <body>
     <main class="app">
@@ -142,11 +142,25 @@
           <div id="loopPadGrid" class="loop-pad-grid"></div>
           <div id="loopPadMenuBackdrop" class="loop-pad-menu-backdrop hidden"></div>
           <div id="loopPadMenu" class="instrument-menu hidden">
+            <button id="loopPadMenuClose" class="loop-pad-menu-close" type="button" aria-label="Cerrar">×</button>
             <strong id="loopPadMenuTitle">Slot vacio</strong>
             <select id="loopPadMenuType">
               <option value="loop">Loop</option>
               <option value="oneshot">One-shot</option>
             </select>
+            <label class="slider compact">
+              <span>Volumen <strong id="loopPadMenuVolumeReadout">100%</strong></span>
+              <input id="loopPadMenuVolume" type="range" min="0" max="100" value="100" />
+            </label>
+            <button id="loopPadMenuReverse" class="utility-button" type="button">Reverse</button>
+            <label class="slider compact">
+              <span>Fade In <strong id="loopPadMenuFadeInReadout">15 ms</strong></span>
+              <input id="loopPadMenuFadeIn" type="range" min="10" max="2000" value="15" />
+            </label>
+            <label class="slider compact">
+              <span>Fade Out <strong id="loopPadMenuFadeOutReadout">250 ms</strong></span>
+              <input id="loopPadMenuFadeOut" type="range" min="10" max="5000" value="250" />
+            </label>
             <button id="loopPadMenuQuantize" class="utility-button" type="button">Quantize</button>
             <select id="loopPadMenuQuantizeValue">
               <option value="1_bar">1 compas</option>
@@ -537,6 +551,6 @@
       </div>
     </div>
 
-    <script type="module" src="./app.js?v=134"></script>
+    <script type="module" src="./app.js?v=138"></script>
   </body>
 </html>

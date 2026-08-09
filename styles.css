@@ -842,14 +842,38 @@ button {
 }
 
 #loopPadMenuTitle,
-#loopPadMenuType {
+#loopPadMenuType,
+#loopPadMenuReverse {
   grid-column: 1 / -1;
 }
 
-#loopPadMenuQuantize.active {
-  border-color: rgba(240, 179, 91, 0.95);
+#loopPadMenuTitle {
+  display: block;
+  min-height: 28px;
+  padding-right: 40px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.loop-pad-menu-close {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  min-height: 28px;
+  width: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
   background: #f0b35b;
   color: #15120e;
+  font-weight: 800;
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+#loopPadMenu label.slider {
+  grid-column: 1 / -1;
 }
 
 .loop-pad-settings {
