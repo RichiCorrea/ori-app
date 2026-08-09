@@ -7,7 +7,7 @@
     <title>ORI</title>
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="apple-touch-icon" href="./ORI-icon.png" />
-    <link rel="stylesheet" href="./styles.css?v=118" />
+    <link rel="stylesheet" href="./styles.css?v=126" />
   </head>
   <body>
     <main class="app">
@@ -117,6 +117,7 @@
         <div class="button-row">
           <button id="loopToggle" type="button">Loop Off</button>
           <button id="tapTempo" type="button">Tap</button>
+          <button id="voiceModeToggle" class="voice-toggle" type="button" aria-pressed="false">+Voice</button>
         </div>
       </section>
 
@@ -470,6 +471,7 @@
       <section class="status">
         <div id="pulse" class="pulse"></div>
         <p id="statusText">Toca Play para iniciar el audio.</p>
+        <p id="wakeLockIndicator" class="wake-lock-indicator" hidden>Pantalla activa — no bloquear manualmente durante la sesión</p>
       </section>
     </main>
 
@@ -496,6 +498,6 @@
       </div>
     </div>
 
-    <script type="module" src="./app.js?v=118"></script>
+    <script type="module" src="./app.js?v=126"></script>
   </body>
 </html>

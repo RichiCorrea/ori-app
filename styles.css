@@ -948,9 +948,15 @@ input[type="range"] {
 
 .button-row {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 10px;
   margin-top: 14px;
+}
+
+.voice-toggle.active {
+  border-color: rgba(240, 179, 91, 0.95);
+  background: #f0b35b;
+  color: #15120e;
 }
 
 .scene-grid {
@@ -1035,9 +1041,17 @@ input[type="range"] {
 .status {
   display: flex;
   align-items: center;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 4px 12px;
   min-height: 64px;
   padding: 12px 14px;
+}
+
+.wake-lock-indicator {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 0.78rem;
+  color: #9fd9cb;
 }
 
 .pulse {

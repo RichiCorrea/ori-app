@@ -98,6 +98,8 @@ function normalizeScene(scene) {
     drumSampleEnabled: scene.drumSampleEnabled || null,
     drumSampleNames: scene.drumSampleNames || null,
     padSettings: normalizePadSettings(scene.padSettings),
+    drumsEnabled: typeof scene.drumsEnabled === "boolean" ? scene.drumsEnabled : false,
+    loopEnabled: typeof scene.loopEnabled === "boolean" ? scene.loopEnabled : false,
   };
 }
 
@@ -220,6 +222,7 @@ function saveAppState() {
     muted: state.muted,
     ui: state.ui,
     padEq: state.padEq,
+    voiceMode: state.voiceMode,
   };
 
   const didWriteLocal = writeStorage(STORAGE_KEY, JSON.stringify(snapshot));
@@ -309,6 +312,10 @@ function applyAppSnapshot(snapshot) {
     if (typeof snapshot.padEq.lpf === "number") state.padEq.lpf = snapshot.padEq.lpf;
     if (typeof snapshot.padEq.output === "number") state.padEq.output = snapshot.padEq.output;
   }
+
+  if (snapshot.voiceMode) {
+    if (typeof snapshot.voiceMode.enabled === "boolean") state.voiceMode.enabled = snapshot.voiceMode.enabled;
+  }
 }
 
 function loadAppState() {
@@ -368,6 +375,7 @@ const state = {
   arpDelayNode: null,
   arpLFONode: null,
   unlocked: false,
+  wakeLock: null,
   activePad: null,
   isPlaying: false,
   bpm: 72,
@@ -493,6 +501,20 @@ const state = {
     output: 0,
   },
   padEqNode: null,
+  voiceMode: {
+    enabled: false,
+  },
+  voiceFilterNodes: null,
+};
+
+// "+Voice" mode: per-layer automatic EQ carving space for a live vocal.
+// Each layer gets its own cut, tailored to where its timbre actually
+// conflicts with vocal presence/mud, instead of one generic master curve.
+const VOICE_EQ_PRESETS = {
+  pad: { lowFreq: 220, lowGain: -3, lowQ: 0.7, presenceFreq: 2800, presenceGain: -4, presenceQ: 1.1 },
+  loop: { lowFreq: 250, lowGain: -2, lowQ: 0.7, presenceFreq: 2500, presenceGain: -3, presenceQ: 1.0 },
+  drum: { lowFreq: 300, lowGain: -2, lowQ: 0.7, presenceFreq: 3200, presenceGain: -3, presenceQ: 1.3 },
+  arp: { lowFreq: 200, lowGain: -2, lowQ: 0.7, presenceFreq: 2200, presenceGain: -3.5, presenceQ: 1.0 },
 };
 
 const bpmReadout = document.querySelector("#bpmReadout");
@@ -546,6 +568,7 @@ const drumGrooveSelect = document.querySelector("#drumGrooveSelect");
 const drumKitSelect = document.querySelector("#drumKitSelect");
 const stopButton = document.querySelector("#stopButton");
 const tapTempo = document.querySelector("#tapTempo");
+const voiceModeToggle = document.querySelector("#voiceModeToggle");
 const pulse = document.querySelector("#pulse");
 const statusText = document.querySelector("#statusText");
 const sceneGrid = document.querySelector("#sceneGrid");
@@ -1063,6 +1086,17 @@ function createPadEQ(ctx) {
   };
 }
 
+function applyVoiceMode() {
+  if (!state.voiceFilterNodes) return;
+  const now = state.audioContext.currentTime;
+  Object.values(state.voiceFilterNodes).forEach(({ lowCut, presenceCut, preset }) => {
+    const lowTarget = state.voiceMode.enabled ? preset.lowGain : 0;
+    const presenceTarget = state.voiceMode.enabled ? preset.presenceGain : 0;
+    lowCut.gain.setTargetAtTime(lowTarget, now, 0.08);
+    presenceCut.gain.setTargetAtTime(presenceTarget, now, 0.08);
+  });
+}
+
 function ensureAudio() {
   if (state.audioContext) return;
 
@@ -1085,7 +1119,33 @@ function ensureAudio() {
 
   state.masterGain = state.audioContext.createGain();
   state.masterGain.gain.value = 0.9;
-  state.masterGain.connect(state.audioContext.destination);
+
+  // Output chain: masterGain → bus compressor (glue/loudness) → makeup gain
+  // → brickwall limiter (peak safety) → destination. Per-instrument gains
+  // above (pad/loop/click/drum/arp) are untouched — this only raises overall
+  // perceived loudness to compete with Spotify/YouTube-level sources when
+  // mixed live through an external console, without risking clipping.
+  state.busCompressor = state.audioContext.createDynamicsCompressor();
+  state.busCompressor.threshold.value = -12;
+  state.busCompressor.knee.value = 6;
+  state.busCompressor.ratio.value = 3;
+  state.busCompressor.attack.value = 0.006;
+  state.busCompressor.release.value = 0.2;
+
+  state.makeupGain = state.audioContext.createGain();
+  state.makeupGain.gain.value = Math.pow(10, 3 / 20); // +3 dB
+
+  state.limiterNode = state.audioContext.createDynamicsCompressor();
+  state.limiterNode.threshold.value = -1;
+  state.limiterNode.knee.value = 0;
+  state.limiterNode.ratio.value = 20;
+  state.limiterNode.attack.value = 0.001;
+  state.limiterNode.release.value = 0.05;
+
+  state.masterGain.connect(state.busCompressor);
+  state.busCompressor.connect(state.makeupGain);
+  state.makeupGain.connect(state.limiterNode);
+  state.limiterNode.connect(state.audioContext.destination);
 
   state.padGain = state.audioContext.createGain();
   state.loopGain = state.audioContext.createGain();
@@ -1099,15 +1159,34 @@ function ensureAudio() {
   state.clickGain.gain.value = state.muted.click ? 0 : state.volumes.click;
   state.drumGain.gain.value = state.muted.drum ? 0 : state.volumes.drum;
   state.arpGain.gain.value = state.muted.arp ? 0 : state.volumes.arp * 0.30;
-  state.padGain.connect(state.masterGain);
+  state.voiceFilterNodes = {};
+  ["pad", "loop", "drum", "arp"].forEach((channel) => {
+    const preset = VOICE_EQ_PRESETS[channel];
+    const lowCut = state.audioContext.createBiquadFilter();
+    lowCut.type = "peaking";
+    lowCut.frequency.value = preset.lowFreq;
+    lowCut.Q.value = preset.lowQ;
+    lowCut.gain.value = 0;
+    const presenceCut = state.audioContext.createBiquadFilter();
+    presenceCut.type = "peaking";
+    presenceCut.frequency.value = preset.presenceFreq;
+    presenceCut.Q.value = preset.presenceQ;
+    presenceCut.gain.value = 0;
+    lowCut.connect(presenceCut);
+    presenceCut.connect(state.masterGain);
+    state.voiceFilterNodes[channel] = { lowCut, presenceCut, preset };
+  });
+  applyVoiceMode();
+
+  state.padGain.connect(state.voiceFilterNodes.pad.lowCut);
   state.padEqNode = createPadEQ(state.audioContext);
   state.padEqNode.output.connect(state.padGain);
   state.padEqNode.applyState(state.padEq);
-  state.loopGain.connect(state.masterGain);
+  state.loopGain.connect(state.voiceFilterNodes.loop.lowCut);
   state.clickGain.connect(state.masterGain);
-  state.drumGain.connect(state.masterGain);
+  state.drumGain.connect(state.voiceFilterNodes.drum.lowCut);
   state.arpGain.connect(state.arpTrimNode);
-  state.arpTrimNode.connect(state.masterGain);
+  state.arpTrimNode.connect(state.voiceFilterNodes.arp.lowCut);
 
   state.arpEQNode = createArpEQ(state.audioContext);
   state.arpEQNode.setLowCut(state.arp.lowcut);
@@ -1152,13 +1231,15 @@ async function unlockAudio() {
   }
   await decodeStoredDrumSamples();
 
+  // Starting an oscillator on a user gesture is what actually satisfies iOS's
+  // autoplay-unlock requirement — it doesn't need to be audible. Kept silent
+  // so Play/on-off buttons no longer emit a "click" that isn't real pad/drum
+  // audio starting.
   const now = state.audioContext.currentTime;
   const unlockGain = state.audioContext.createGain();
   const unlockOscillator = state.audioContext.createOscillator();
 
   unlockGain.gain.setValueAtTime(0.0001, now);
-  unlockGain.gain.exponentialRampToValueAtTime(0.18, now + 0.02);
-  unlockGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
 
   unlockOscillator.type = "sine";
   unlockOscillator.frequency.setValueAtTime(880, now);
@@ -1280,6 +1361,8 @@ function applyPendingLoop() {
 
   state.loopEnabled = state.pendingLoopEnabled;
   state.pendingLoopEnabled = null;
+  if (scenes[state.sceneId]) scenes[state.sceneId].loopEnabled = state.loopEnabled;
+  saveAppState();
   renderTransport();
   setStatus(state.loopEnabled ? "Loop activo desde este compas." : "Loop detenido desde este compas.");
 }
@@ -1289,6 +1372,8 @@ function applyPendingDrums() {
 
   state.drumsEnabled = state.pendingDrumsEnabled;
   state.pendingDrumsEnabled = null;
+  if (scenes[state.sceneId]) scenes[state.sceneId].drumsEnabled = state.drumsEnabled;
+  saveAppState();
   state.drumStep = 0;
   state.currentUiDrumStep = -1;
   state.drumSubStep = 0;
@@ -1959,7 +2044,39 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden && state.audioContext?.state === 'suspended') {
     state.audioContext.resume(); // statechange listener restarts the scheduler
   }
+  if (!document.hidden && state.isPlaying) {
+    requestWakeLock(); // the OS releases the lock whenever the tab is hidden
+  }
 });
+
+// Wake Lock API: prevents iOS auto-lock (inactivity timeout) while playing.
+// Does NOT prevent a manual press of the physical lock button — no web API can.
+async function requestWakeLock() {
+  if (!('wakeLock' in navigator) || state.wakeLock) return;
+  try {
+    state.wakeLock = await navigator.wakeLock.request('screen');
+    state.wakeLock.addEventListener('release', () => { state.wakeLock = null; });
+    setWakeLockIndicator(true);
+  } catch (error) {
+    state.wakeLock = null;
+  }
+}
+
+async function releaseWakeLock() {
+  setWakeLockIndicator(false);
+  if (!state.wakeLock) return;
+  try {
+    await state.wakeLock.release();
+  } catch (error) {
+    // already released
+  }
+  state.wakeLock = null;
+}
+
+function setWakeLockIndicator(active) {
+  const indicator = document.querySelector('#wakeLockIndicator');
+  if (indicator) indicator.hidden = !active;
+}
 
 function setupMediaSession() {
   if (!('mediaSession' in navigator)) return;
@@ -1997,12 +2114,26 @@ async function play() {
     return;
   }
   state.isPlaying = true;
+  ["pad", "loop", "click", "drum", "arp"].forEach(applyChannelGain); // undo any Stop fade-to-silence
   startPadForScene(state.sceneId);
   scheduleTransport();
   setupMediaSession();
   updateMediaSession();
+  requestWakeLock();
   setStatus(`Sonando: ${scenes[state.sceneId].name}. Audio: ${state.audioContext.state}`);
   renderTransport();
+}
+
+function fadeChannelsToSilence(duration) {
+  if (!state.audioContext) return;
+  const now = state.audioContext.currentTime;
+  ["pad", "loop", "click", "drum", "arp"].forEach((channel) => {
+    const node = state[`${channel}Gain`];
+    if (!node) return;
+    node.gain.cancelScheduledValues(now);
+    node.gain.setValueAtTime(Math.max(node.gain.value, 0.0001), now);
+    node.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+  });
 }
 
 function pause() {
@@ -2013,11 +2144,13 @@ function pause() {
   stopPad(state.activePad, 0.8);
   state.activePad = null;
   updateMediaSession();
+  releaseWakeLock();
   setStatus("Pausado.");
   renderTransport();
 }
 
 function stop() {
+  fadeChannelsToSilence(0.15); // brief, smooth cut instead of an instant one; channel gains are restored on next Play
   pause();
   state.bar = 1;
   state.beat = 1;
@@ -2078,6 +2211,8 @@ function applyScenePresetSettings(sceneId) {
   if (scene.drumKitId && drumKits[scene.drumKitId]) {
     state.drumKitId = scene.drumKitId;
   }
+  state.drumsEnabled = typeof scene.drumsEnabled === "boolean" ? scene.drumsEnabled : false;
+  state.loopEnabled = typeof scene.loopEnabled === "boolean" ? scene.loopEnabled : false;
   if (["half", "normal", "double", "quad"].includes(scene.drumRate)) {
     state.drumRate = scene.drumRate;
   } else {
@@ -2170,7 +2305,16 @@ function applyArpSceneSettings(sceneId) {
   if (a.lfoShape) state.arp.lfoShape = a.lfoShape;
   if (a.lfoTarget) state.arp.lfoTarget = a.lfoTarget;
   if (typeof a.octShift === "number") state.arp.octShift = a.octShift;
-  if (typeof a.outputGain === "number") { state.arp.outputGain = a.outputGain; if (state.arpTrimNode) state.arpTrimNode.gain.value = Math.pow(10, a.outputGain / 20); }
+  if (typeof a.outputGain === "number") {
+    state.arp.outputGain = a.outputGain;
+    if (state.arpTrimNode) {
+      // Ramped, not instant — an arp note can still be ringing when the scene
+      // switches, and scenes can differ by many dB of output gain.
+      const now = state.audioContext.currentTime;
+      state.arpTrimNode.gain.cancelScheduledValues(now);
+      state.arpTrimNode.gain.setTargetAtTime(Math.pow(10, a.outputGain / 20), now, 0.15);
+    }
+  }
   if (state.arpLFONode) {
     state.arpLFONode.setRate(state.arp.lfoRate);
     state.arpLFONode.setShape(state.arp.lfoShape);
@@ -2351,6 +2495,8 @@ function createNewScene() {
     drumSampleEnabled: { ...state.drumSampleEnabled },
     drumSampleNames: { ...state.drumSampleNames },
     padSettings: normalizePadSettings(PAD_DEFAULTS),
+    drumsEnabled: false,
+    loopEnabled: false,
     ...(currentKey === "C" && { arpSettings: snapshotArpSettings() }),
   };
   sceneDrumPatterns[sceneId] = createGroovePattern("auto", "4/4");
@@ -2478,6 +2624,8 @@ loopToggle.addEventListener("click", async () => {
   if (!state.isPlaying) {
     state.loopEnabled = nextLoopState;
     state.pendingLoopEnabled = null;
+    if (scenes[state.sceneId]) scenes[state.sceneId].loopEnabled = state.loopEnabled;
+    saveAppState();
     setStatus(state.loopEnabled ? "Loop listo." : "Loop apagado.");
     renderTransport();
     return;
@@ -2499,6 +2647,8 @@ drumsToggle.addEventListener("click", async () => {
   if (!state.isPlaying) {
     state.drumsEnabled = nextDrumState;
     state.pendingDrumsEnabled = null;
+    if (scenes[state.sceneId]) scenes[state.sceneId].drumsEnabled = state.drumsEnabled;
+    saveAppState();
     state.drumStep = 0;
     state.currentUiDrumStep = -1;
     state.drumSubStep = 0;
@@ -3204,6 +3354,14 @@ padEqToggle.addEventListener("click", () => {
   saveAppState();
 });
 
+voiceModeToggle.classList.toggle("active", state.voiceMode.enabled);
+voiceModeToggle.addEventListener("click", () => {
+  state.voiceMode.enabled = !state.voiceMode.enabled;
+  voiceModeToggle.classList.toggle("active", state.voiceMode.enabled);
+  applyVoiceMode();
+  saveAppState();
+});
+
 arpFxToggle.addEventListener("click", () => {
   const open = !arpFxPanel.classList.contains("collapsed");
   arpFxPanel.classList.toggle("collapsed", open);
@@ -3244,23 +3402,55 @@ arpNaturalAccentBtn.addEventListener("click", () => {
   renderArp();
   saveAppState();
 });
-arpPiano.addEventListener("click", (e) => {
-  const key = e.target.closest("[data-note]");
-  if (!key) return;
-  const note = Number(key.dataset.note);
-  const idx = state.arp.customNotes.indexOf(note);
-  if (idx >= 0) {
+function toggleArpCustomNote(semi, forceState) {
+  const idx = state.arp.customNotes.indexOf(semi);
+  const shouldBeOn = forceState === undefined ? idx < 0 : forceState;
+  if (shouldBeOn && idx < 0) {
+    state.arp.customNotes.push(semi);
+    state.arp.customNotes.sort((a, b) => a - b);
+  } else if (!shouldBeOn && idx >= 0) {
     state.arp.customNotes.splice(idx, 1);
   } else {
-    state.arp.customNotes.push(note);
-    state.arp.customNotes.sort((a, b) => a - b);
+    return;
   }
   state.arp.stepIndex = 0;
   // Do NOT reset nextNoteTime — resetting causes the scheduler to reprogram a note
   // at the current beat boundary, overlapping with any note still in decay → click.
   // The note pool is rebuilt on every scheduleArpSteps call so the change is immediate.
   renderArpPiano();
+}
+
+arpPiano.addEventListener("click", (e) => {
+  const key = e.target.closest("[data-note]");
+  if (!key) return;
+  toggleArpCustomNote(Number(key.dataset.note));
 });
+
+// MIDI controller input: note-on/off from a real keyboard populate the same
+// customNotes buffer as tapping the on-screen piano (semi = midiNote - 60,
+// since the scheduler maps customNotes to pitch via `60 + s`, src/arp-scheduler.js).
+function setupMidiInput() {
+  if (!navigator.requestMIDIAccess) return;
+  navigator.requestMIDIAccess({ sysex: false }).then((access) => {
+    const handleMessage = (event) => {
+      const [status, note, velocity] = event.data;
+      const command = status & 0xf0;
+      const semi = note - 60;
+      if (command === 0x90 && velocity > 0) {
+        toggleArpCustomNote(semi, true);
+      } else if (command === 0x80 || (command === 0x90 && velocity === 0)) {
+        toggleArpCustomNote(semi, false);
+      }
+    };
+    const attach = (input) => { input.onmidimessage = handleMessage; };
+    access.inputs.forEach(attach);
+    access.onstatechange = (event) => {
+      if (event.port.type === "input" && event.port.state === "connected") attach(event.port);
+    };
+  }).catch(() => {
+    // No MIDI permission or no controller connected — the on-screen piano still works.
+  });
+}
 arpPianoClear.addEventListener("click", () => {
   state.arp.customNotes = [];
   state.arp.stepIndex = 0;
@@ -3301,6 +3491,7 @@ arpToggle.addEventListener("click", () => {
 });
 
 renderArp();
+setupMidiInput();
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
