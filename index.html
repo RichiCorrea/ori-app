@@ -7,7 +7,7 @@
     <title>ORI</title>
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="apple-touch-icon" href="./ORI-icon.png" />
-    <link rel="stylesheet" href="./styles.css?v=139" />
+    <link rel="stylesheet" href="./styles.css?v=148" />
   </head>
   <body>
     <main class="app">
@@ -140,48 +140,6 @@
         </div>
         <div id="loopPadsPanel" class="loop-pads-panel">
           <div id="loopPadGrid" class="loop-pad-grid"></div>
-          <div id="loopPadMenuBackdrop" class="loop-pad-menu-backdrop hidden"></div>
-          <div id="loopPadMenu" class="instrument-menu hidden">
-            <button id="loopPadMenuClose" class="loop-pad-menu-close" type="button" aria-label="Cerrar">×</button>
-            <strong id="loopPadMenuTitle">Slot vacio</strong>
-            <select id="loopPadMenuType">
-              <option value="loop">Loop</option>
-              <option value="oneshot">One-shot</option>
-            </select>
-            <label class="slider compact">
-              <span>Volumen <strong id="loopPadMenuVolumeReadout">100%</strong></span>
-              <input id="loopPadMenuVolume" type="range" min="0" max="100" value="100" />
-            </label>
-            <button id="loopPadMenuReverse" class="utility-button" type="button">Reverse</button>
-            <label class="slider compact">
-              <span>Fade In <strong id="loopPadMenuFadeInReadout">15 ms</strong></span>
-              <input id="loopPadMenuFadeIn" type="range" min="10" max="2000" value="15" />
-            </label>
-            <label class="slider compact">
-              <span>Fade Out <strong id="loopPadMenuFadeOutReadout">250 ms</strong></span>
-              <input id="loopPadMenuFadeOut" type="range" min="10" max="5000" value="250" />
-            </label>
-            <button id="loopPadMenuQuantize" class="utility-button" type="button">Quantize</button>
-            <select id="loopPadMenuQuantizeValue">
-              <option value="1_bar">1 compas</option>
-              <option value="1_beat">1 beat</option>
-              <option value="1_half_beat">Medio beat</option>
-            </select>
-            <button id="loopPadMenuTrim" class="utility-button" type="button">Trim</button>
-            <button id="loopPadMenuLoad" class="sample-load" type="button">Cargar</button>
-            <button id="loopPadMenuClear" class="sample-load" type="button">Quitar</button>
-          </div>
-          <div id="loopPadTrimModal" class="instrument-menu loop-pad-trim-modal hidden">
-            <button id="loopPadTrimClose" class="loop-pad-menu-close" type="button" aria-label="Cerrar">×</button>
-            <strong id="loopPadTrimTitle">Trim</strong>
-            <canvas id="loopPadTrimCanvas" width="280" height="90"></canvas>
-            <div class="loop-pad-trim-readouts">
-              <span>Inicio <strong id="loopPadTrimStartReadout">0.00s</strong></span>
-              <span>Fin <strong id="loopPadTrimEndReadout">0.00s</strong></span>
-            </div>
-            <button id="loopPadTrimPreview" class="utility-button" type="button">Preview</button>
-            <button id="loopPadTrimDone" class="sample-load" type="button">Listo</button>
-          </div>
           <input id="loopPadFileInput" class="sample-input" type="file" accept="audio/*,audio/mpeg,audio/wav,audio/wave,audio/x-wav,audio/mp4,audio/x-m4a,audio/aac" />
         </div>
       </section>
@@ -538,6 +496,54 @@
         <p id="statusText">Toca Play para iniciar el audio.</p>
         <p id="wakeLockIndicator" class="wake-lock-indicator" hidden>Pantalla activa — no bloquear manualmente durante la sesión</p>
       </section>
+
+      <!-- Kept as direct children of .app (no backdrop-filter/transform ancestor) so
+           position:fixed actually pins to the viewport instead of getting trapped by
+           an ancestor's backdrop-filter (WebKit treats that like `filter`, which creates
+           a containing block for fixed-position descendants). -->
+      <div id="loopPadMenuBackdrop" class="loop-pad-menu-backdrop hidden"></div>
+      <div id="loopPadMenu" class="instrument-menu hidden">
+        <button id="loopPadMenuClose" class="loop-pad-menu-close" type="button" aria-label="Cerrar">×</button>
+        <strong id="loopPadMenuTitle">Slot vacio</strong>
+        <select id="loopPadMenuType">
+          <option value="loop">Loop</option>
+          <option value="oneshot">One-shot</option>
+        </select>
+        <label class="slider compact">
+          <span>Volumen <strong id="loopPadMenuVolumeReadout">100%</strong></span>
+          <input id="loopPadMenuVolume" type="range" min="0" max="100" value="100" />
+        </label>
+        <button id="loopPadMenuReverse" class="utility-button" type="button">Reverse</button>
+        <label class="slider compact">
+          <span>Fade In <strong id="loopPadMenuFadeInReadout">15 ms</strong></span>
+          <input id="loopPadMenuFadeIn" type="range" min="10" max="2000" value="15" />
+        </label>
+        <label class="slider compact">
+          <span>Fade Out <strong id="loopPadMenuFadeOutReadout">250 ms</strong></span>
+          <input id="loopPadMenuFadeOut" type="range" min="10" max="5000" value="250" />
+        </label>
+        <button id="loopPadMenuQuantize" class="utility-button" type="button">Quantize</button>
+        <select id="loopPadMenuQuantizeValue">
+          <option value="1_bar">1 compas</option>
+          <option value="1_beat">1 beat</option>
+          <option value="1_half_beat">Medio beat</option>
+        </select>
+        <button id="loopPadMenuTrim" class="utility-button" type="button">Trim</button>
+        <div id="loopPadTrimSection" class="loop-pad-trim-section hidden">
+          <div class="loop-pad-trim-zoom-row">
+            <button id="loopPadTrimZoomOut" class="utility-button" type="button" aria-label="Alejar">−</button>
+            <button id="loopPadTrimZoomIn" class="utility-button" type="button" aria-label="Acercar">+</button>
+          </div>
+          <canvas id="loopPadTrimCanvas" width="280" height="90"></canvas>
+          <div class="loop-pad-trim-readouts">
+            <span>Inicio <strong id="loopPadTrimStartReadout">0.00s</strong></span>
+            <span>Fin <strong id="loopPadTrimEndReadout">0.00s</strong></span>
+          </div>
+          <button id="loopPadTrimPreview" class="utility-button" type="button">Preview recorte</button>
+        </div>
+        <button id="loopPadMenuLoad" class="sample-load" type="button">Cargar</button>
+        <button id="loopPadMenuClear" class="sample-load" type="button">Quitar</button>
+      </div>
     </main>
 
     <div id="bpmModal" class="bpm-modal" hidden>
@@ -563,6 +569,6 @@
       </div>
     </div>
 
-    <script type="module" src="./app.js?v=139"></script>
+    <script type="module" src="./app.js?v=148"></script>
   </body>
 </html>

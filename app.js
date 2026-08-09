@@ -499,6 +499,7 @@ const state = {
   loopPadInstances: {},
   loopPadPendingStart: {},
   loopPadTrimEditor: null,
+  loopPadModalScrollLocked: false,
   drumsEnabled: false,
   pendingDrumsEnabled: null,
   drumStep: 0,
@@ -722,14 +723,13 @@ const loopPadMenuFadeInReadout = document.querySelector("#loopPadMenuFadeInReado
 const loopPadMenuFadeOut = document.querySelector("#loopPadMenuFadeOut");
 const loopPadMenuFadeOutReadout = document.querySelector("#loopPadMenuFadeOutReadout");
 const loopPadMenuTrim = document.querySelector("#loopPadMenuTrim");
-const loopPadTrimModal = document.querySelector("#loopPadTrimModal");
-const loopPadTrimClose = document.querySelector("#loopPadTrimClose");
-const loopPadTrimTitle = document.querySelector("#loopPadTrimTitle");
+const loopPadTrimSection = document.querySelector("#loopPadTrimSection");
 const loopPadTrimCanvas = document.querySelector("#loopPadTrimCanvas");
 const loopPadTrimStartReadout = document.querySelector("#loopPadTrimStartReadout");
 const loopPadTrimEndReadout = document.querySelector("#loopPadTrimEndReadout");
 const loopPadTrimPreview = document.querySelector("#loopPadTrimPreview");
-const loopPadTrimDone = document.querySelector("#loopPadTrimDone");
+const loopPadTrimZoomIn = document.querySelector("#loopPadTrimZoomIn");
+const loopPadTrimZoomOut = document.querySelector("#loopPadTrimZoomOut");
 const loopPadMenuLoad = document.querySelector("#loopPadMenuLoad");
 const loopPadMenuClear = document.querySelector("#loopPadMenuClear");
 const loopPadFileInput = document.querySelector("#loopPadFileInput");
@@ -970,15 +970,36 @@ function renderLoopPadStates() {
   });
 }
 
+// iOS Safari can visually lag position:fixed elements behind their real hit-test
+// box during/after a scroll (a known WebKit rendering quirk), which made the
+// pad settings/trim popups look present but untouchable, or only "wake up" after
+// scrolling. Locking body scroll while either popup is open avoids the whole
+// class of bug instead of chasing each symptom.
+function lockBodyScroll() {
+  if (state.loopPadModalScrollLocked) return;
+  state.loopPadModalScrollLocked = true;
+  document.body.style.overflow = "hidden";
+}
+
+function unlockBodyScroll() {
+  if (!state.loopPadModalScrollLocked) return;
+  state.loopPadModalScrollLocked = false;
+  document.body.style.overflow = "";
+}
+
 function closeLoopPadMenu() {
   loopPadMenu.classList.add("hidden");
   loopPadMenuBackdrop.classList.add("hidden");
   loopPadMenu.dataset.slotId = "";
+  loopPadTrimSection.classList.add("hidden");
+  state.loopPadTrimEditor = null;
+  unlockBodyScroll();
 }
 
 function openLoopPadMenu(slotId) {
   const slot = getCurrentLoopSlot(slotId);
   if (!slot) return;
+  lockBodyScroll();
 
   loopPadMenu.dataset.slotId = slotId;
   loopPadMenuTitle.textContent = slot.fileName || "Slot vacio";
@@ -1037,13 +1058,14 @@ function updateLoopPadTrim(slotId, startMs, endMs) {
   saveAppState();
 }
 
-function extractWaveformPeaks(audioBuffer, targetWidth) {
+function extractWaveformPeaks(audioBuffer, targetWidth, startSample = 0, endSample = audioBuffer.length) {
   const channelData = audioBuffer.getChannelData(0);
-  const blockSize = Math.max(1, Math.floor(channelData.length / targetWidth));
+  const rangeLength = Math.max(1, endSample - startSample);
+  const blockSize = Math.max(1, Math.floor(rangeLength / targetWidth));
   const peaks = [];
   for (let i = 0; i < targetWidth; i++) {
-    const start = i * blockSize;
-    const end = Math.min(channelData.length, start + blockSize);
+    const start = startSample + i * blockSize;
+    const end = Math.min(endSample, start + blockSize);
     let min = 0;
     let max = 0;
     for (let j = start; j < end; j++) {
@@ -1056,7 +1078,36 @@ function extractWaveformPeaks(audioBuffer, targetWidth) {
   return peaks;
 }
 
-function drawWaveform(ctx, peaks, width, height, trimStartRatio, trimEndRatio) {
+// Diagonal hatch clipped to the triangular fade region: full height at the
+// silent edge, tapering to a point at the edge where the fade completes.
+// Fainter than the trim handles so it reads as "this is the fade shape",
+// not another control. The triangle auto-mirrors based on which of edgeX/endX
+// is larger, so the same path works for both fade-in (edgeX < endX) and
+// fade-out (edgeX > endX).
+function drawFadeHatch(ctx, edgeX, endX, height) {
+  if (Math.abs(endX - edgeX) < 1) return;
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(edgeX, 0);
+  ctx.lineTo(endX, 0);
+  ctx.lineTo(edgeX, height);
+  ctx.closePath();
+  ctx.clip();
+
+  ctx.strokeStyle = "rgba(247, 243, 232, 0.32)";
+  ctx.lineWidth = 1;
+  const span = Math.abs(endX - edgeX) + height;
+  const left = Math.min(edgeX, endX) - height;
+  for (let x = left; x < left + span * 2; x += 6) {
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x + height, height);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawWaveform(ctx, peaks, width, height, trimStartRatio, trimEndRatio, fadeInRatio, fadeOutRatio) {
   ctx.clearRect(0, 0, width, height);
   const mid = height / 2;
   peaks.forEach(([min, max], i) => {
@@ -1069,60 +1120,127 @@ function drawWaveform(ctx, peaks, width, height, trimStartRatio, trimEndRatio) {
     ctx.stroke();
   });
 
-  ctx.strokeStyle = "#f0b35b";
-  ctx.lineWidth = 2;
+  if (fadeInRatio > 0) {
+    const startX = trimStartRatio * width;
+    const endX = Math.min(trimEndRatio, trimStartRatio + fadeInRatio) * width;
+    drawFadeHatch(ctx, startX, endX, height);
+  }
+  if (fadeOutRatio > 0) {
+    const startX = trimEndRatio * width;
+    const endX = Math.max(trimStartRatio, trimEndRatio - fadeOutRatio) * width;
+    drawFadeHatch(ctx, startX, endX, height);
+  }
+
+  const handleWidth = 4;
+  ctx.fillStyle = "#f0b35b";
   [trimStartRatio, trimEndRatio].forEach((ratio) => {
-    const x = Math.round(ratio * width);
+    // clamp so the handle stays fully visible even right at 0% or 100%
+    const x = Math.min(width - handleWidth, Math.max(0, ratio * width - handleWidth / 2));
+    ctx.fillRect(x, 0, handleWidth, height);
     ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, height);
-    ctx.stroke();
+    ctx.arc(x + handleWidth / 2, 7, 7, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(x + handleWidth / 2, height - 7, 7, 0, Math.PI * 2);
+    ctx.fill();
   });
+}
+
+// The canvas's bitmap resolution defaults to its HTML width/height attributes
+// (280x90), but CSS stretches it to the modal's actual on-screen width. On a
+// retina phone that stretch is 2-3x, so the waveform came out soft/hazy.
+// Match the bitmap to the real CSS size * devicePixelRatio and draw in CSS
+// pixel coordinates so it renders crisp.
+function setupTrimCanvasResolution() {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = loopPadTrimCanvas.getBoundingClientRect();
+  const cssWidth = Math.round(rect.width) || 280;
+  const cssHeight = Math.round(rect.height) || 90;
+  loopPadTrimCanvas.width = cssWidth * dpr;
+  loopPadTrimCanvas.height = cssHeight * dpr;
+  loopPadTrimCanvas.getContext("2d").setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { width: cssWidth, height: cssHeight };
+}
+
+// Re-extracts peaks for whatever time window is currently zoomed/panned to, at full
+// canvas resolution — genuine detail on zoom-in, not just a stretched low-res image.
+function updateLoopPadTrimPeaksForView() {
+  const editor = state.loopPadTrimEditor;
+  if (!editor) return;
+  const sampleRate = editor.buffer.sampleRate;
+  const startSample = Math.max(0, Math.floor((editor.viewStartMs / 1000) * sampleRate));
+  const endSample = Math.min(editor.buffer.length, Math.ceil((editor.viewEndMs / 1000) * sampleRate));
+  editor.peaks = extractWaveformPeaks(editor.buffer, editor.canvasWidth, startSample, endSample);
+}
+
+function zoomLoopPadTrim(factor) {
+  const editor = state.loopPadTrimEditor;
+  if (!editor) return;
+  const viewLen = editor.viewEndMs - editor.viewStartMs;
+  const center = (editor.startMs + editor.endMs) / 2; // zoom in/out around the current trim selection
+  const minLen = Math.min(200, editor.durationMs);
+  let newLen = Math.max(minLen, Math.min(editor.durationMs, viewLen / factor));
+  let newStart = center - newLen / 2;
+  let newEnd = center + newLen / 2;
+  if (newStart < 0) { newEnd -= newStart; newStart = 0; }
+  if (newEnd > editor.durationMs) { newStart -= newEnd - editor.durationMs; newEnd = editor.durationMs; }
+  editor.viewStartMs = Math.max(0, newStart);
+  editor.viewEndMs = Math.min(editor.durationMs, newEnd);
+  updateLoopPadTrimPeaksForView();
+  renderLoopPadTrimEditor();
 }
 
 function renderLoopPadTrimEditor() {
   const editor = state.loopPadTrimEditor;
   if (!editor) return;
+  const slot = getCurrentLoopSlot(editor.slotId);
   const ctx = loopPadTrimCanvas.getContext("2d");
-  const startRatio = editor.startMs / editor.durationMs;
-  const endRatio = editor.endMs / editor.durationMs;
-  drawWaveform(ctx, editor.peaks, loopPadTrimCanvas.width, loopPadTrimCanvas.height, startRatio, endRatio);
+  const viewLen = editor.viewEndMs - editor.viewStartMs;
+  const startRatio = Math.max(0, Math.min(1, (editor.startMs - editor.viewStartMs) / viewLen));
+  const endRatio = Math.max(0, Math.min(1, (editor.endMs - editor.viewStartMs) / viewLen));
+  const fadeInRatio = slot ? (slot.fadeInMs / viewLen) : 0;
+  const fadeOutRatio = slot ? (slot.fadeOutMs / viewLen) : 0;
+  drawWaveform(ctx, editor.peaks, editor.canvasWidth, editor.canvasHeight, startRatio, endRatio, fadeInRatio, fadeOutRatio);
   loopPadTrimStartReadout.textContent = `${(editor.startMs / 1000).toFixed(2)}s`;
   loopPadTrimEndReadout.textContent = `${(editor.endMs / 1000).toFixed(2)}s`;
 }
 
-function openLoopPadTrimEditor(slotId) {
+function toggleLoopPadTrimEditor(slotId) {
+  if (!loopPadTrimSection.classList.contains("hidden")) {
+    loopPadTrimSection.classList.add("hidden");
+    state.loopPadTrimEditor = null;
+    return;
+  }
+
   const slot = getCurrentLoopSlot(slotId);
   const buffer = state.loopPadBuffers[slotId];
   if (!slot || !buffer) return;
-  closeLoopPadMenu();
 
+  loopPadTrimSection.classList.remove("hidden"); // must unhide before measuring, needs real layout size
+  const canvasSize = setupTrimCanvasResolution();
   const durationMs = buffer.duration * 1000;
-  const peaks = extractWaveformPeaks(buffer, loopPadTrimCanvas.width);
   state.loopPadTrimEditor = {
     slotId,
-    peaks,
+    buffer,
+    peaks: [],
     durationMs,
+    viewStartMs: 0,
+    viewEndMs: durationMs,
+    canvasWidth: canvasSize.width,
+    canvasHeight: canvasSize.height,
     startMs: Math.min(slot.trim.startMs || 0, durationMs),
     endMs: slot.trim.endMs === null ? durationMs : Math.min(slot.trim.endMs, durationMs),
     dragging: null,
   };
-  loopPadTrimTitle.textContent = slot.fileName || "Trim";
+  updateLoopPadTrimPeaksForView();
   renderLoopPadTrimEditor();
-  loopPadTrimModal.classList.remove("hidden");
-  loopPadMenuBackdrop.classList.remove("hidden");
-}
-
-function closeLoopPadTrimEditor() {
-  loopPadTrimModal.classList.add("hidden");
-  loopPadMenuBackdrop.classList.add("hidden");
-  state.loopPadTrimEditor = null;
 }
 
 function loopPadTrimPointerToMs(event) {
+  const editor = state.loopPadTrimEditor;
   const rect = loopPadTrimCanvas.getBoundingClientRect();
   const x = Math.max(0, Math.min(rect.width, event.clientX - rect.left));
-  return (x / rect.width) * state.loopPadTrimEditor.durationMs;
+  return editor.viewStartMs + (x / rect.width) * (editor.viewEndMs - editor.viewStartMs);
 }
 
 function clearLoopPadSlot(slotId, showStatus = true) {
@@ -3452,10 +3570,7 @@ loopPadMenu.addEventListener("click", (event) => {
   event.stopPropagation();
 });
 
-loopPadMenuBackdrop.addEventListener("click", () => {
-  if (!loopPadTrimModal.classList.contains("hidden")) closeLoopPadTrimEditor();
-  else closeLoopPadMenu();
-});
+loopPadMenuBackdrop.addEventListener("click", closeLoopPadMenu);
 loopPadMenuClose.addEventListener("click", closeLoopPadMenu);
 
 loopPadMenuType.addEventListener("change", () => {
@@ -3505,6 +3620,7 @@ loopPadMenuFadeIn.addEventListener("input", () => {
   if (!slotId) return;
   updateLoopPadFadeSetting(slotId, "in", loopPadMenuFadeIn.value);
   loopPadMenuFadeInReadout.textContent = `${loopPadMenuFadeIn.value} ms`;
+  if (state.loopPadTrimEditor?.slotId === slotId) renderLoopPadTrimEditor();
 });
 
 loopPadMenuFadeOut.addEventListener("input", () => {
@@ -3512,6 +3628,7 @@ loopPadMenuFadeOut.addEventListener("input", () => {
   if (!slotId) return;
   updateLoopPadFadeSetting(slotId, "out", loopPadMenuFadeOut.value);
   loopPadMenuFadeOutReadout.textContent = `${loopPadMenuFadeOut.value} ms`;
+  if (state.loopPadTrimEditor?.slotId === slotId) renderLoopPadTrimEditor();
 });
 
 loopPadMenuLoad.addEventListener("click", () => {
@@ -3535,15 +3652,8 @@ loopPadMenuTrim.addEventListener("click", () => {
     setStatus("Esperando a que termine de decodificar el audio...");
     return;
   }
-  openLoopPadTrimEditor(slotId);
+  toggleLoopPadTrimEditor(slotId);
 });
-
-loopPadTrimModal.addEventListener("click", (event) => {
-  event.stopPropagation();
-});
-
-loopPadTrimClose.addEventListener("click", closeLoopPadTrimEditor);
-loopPadTrimDone.addEventListener("click", closeLoopPadTrimEditor);
 
 loopPadTrimPreview.addEventListener("click", async () => {
   const editor = state.loopPadTrimEditor;
@@ -3552,6 +3662,9 @@ loopPadTrimPreview.addEventListener("click", async () => {
   if (!isUnlocked) return;
   triggerLoopPad(editor.slotId);
 });
+
+loopPadTrimZoomIn.addEventListener("click", () => zoomLoopPadTrim(2));
+loopPadTrimZoomOut.addEventListener("click", () => zoomLoopPadTrim(0.5));
 
 loopPadTrimCanvas.addEventListener("pointerdown", (event) => {
   const editor = state.loopPadTrimEditor;

@@ -838,6 +838,8 @@ button {
   transform: translate(-50%, -50%);
   z-index: 21;
   width: min(320px, 88vw);
+  max-height: 85vh;
+  overflow-y: auto;
   grid-template-columns: 1fr 1fr;
 }
 
@@ -872,28 +874,30 @@ button {
   line-height: 1;
 }
 
-.loop-pad-trim-modal {
-  position: fixed;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  z-index: 21;
-  width: min(320px, 88vw);
-  grid-template-columns: 1fr 1fr;
+.loop-pad-trim-section {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 8px;
 }
 
-#loopPadTrimTitle {
-  display: block;
-  min-height: 28px;
-  padding-right: 40px;
-  grid-column: 1 / -1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.loop-pad-trim-section.hidden {
+  display: none;
+}
+
+.loop-pad-trim-zoom-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.loop-pad-trim-zoom-row .utility-button {
+  min-height: 30px;
+  min-width: 36px;
+  font-size: 1rem;
+  font-weight: 800;
 }
 
 #loopPadTrimCanvas {
-  grid-column: 1 / -1;
   width: 100%;
   height: 90px;
   border-radius: 6px;
@@ -902,7 +906,6 @@ button {
 }
 
 .loop-pad-trim-readouts {
-  grid-column: 1 / -1;
   display: flex;
   justify-content: space-between;
   font-size: 0.78rem;

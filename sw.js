@@ -1,9 +1,9 @@
-const CACHE_NAME = "ori-v139";
+const CACHE_NAME = "ori-v148";
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./styles.css?v=139",
-  "./app.js?v=139",
+  "./styles.css?v=148",
+  "./app.js?v=148",
   "./src/music-data.js",
   "./src/drum-machine.js",
   "./src/storage.js",
