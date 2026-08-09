@@ -375,6 +375,7 @@ const state = {
   arpDelayNode: null,
   arpLFONode: null,
   unlocked: false,
+  midiSetupDone: false,
   wakeLock: null,
   activePad: null,
   isPlaying: false,
@@ -1231,6 +1232,14 @@ async function unlockAudio() {
   }
   await decodeStoredDrumSamples();
 
+  // Some browsers only grant Web MIDI access from within a real user gesture
+  // (Play/on-off buttons all funnel through unlockAudio), so request it here
+  // instead of at page load.
+  if (!state.midiSetupDone) {
+    state.midiSetupDone = true;
+    setupMidiInput();
+  }
+
   // Starting an oscillator on a user gesture is what actually satisfies iOS's
   // autoplay-unlock requirement — it doesn't need to be audible. Kept silent
   // so Play/on-off buttons no longer emit a "click" that isn't real pad/drum
@@ -2052,13 +2061,18 @@ document.addEventListener('visibilitychange', () => {
 // Wake Lock API: prevents iOS auto-lock (inactivity timeout) while playing.
 // Does NOT prevent a manual press of the physical lock button — no web API can.
 async function requestWakeLock() {
-  if (!('wakeLock' in navigator) || state.wakeLock) return;
+  if (state.wakeLock) return;
+  if (!('wakeLock' in navigator)) {
+    setWakeLockIndicator(true, "Wake Lock no soportado en este navegador — evita bloquear la pantalla manualmente.");
+    return;
+  }
   try {
     state.wakeLock = await navigator.wakeLock.request('screen');
     state.wakeLock.addEventListener('release', () => { state.wakeLock = null; });
-    setWakeLockIndicator(true);
+    setWakeLockIndicator(true, "Pantalla activa — no bloquear manualmente durante la sesión.");
   } catch (error) {
     state.wakeLock = null;
+    setWakeLockIndicator(true, `Wake Lock fallo (${error.name}) — evita bloquear la pantalla manualmente.`);
   }
 }
 
@@ -2073,9 +2087,11 @@ async function releaseWakeLock() {
   state.wakeLock = null;
 }
 
-function setWakeLockIndicator(active) {
+function setWakeLockIndicator(active, text) {
   const indicator = document.querySelector('#wakeLockIndicator');
-  if (indicator) indicator.hidden = !active;
+  if (!indicator) return;
+  indicator.hidden = !active;
+  if (active && text) indicator.textContent = text;
 }
 
 function setupMediaSession() {
@@ -3430,7 +3446,10 @@ arpPiano.addEventListener("click", (e) => {
 // customNotes buffer as tapping the on-screen piano (semi = midiNote - 60,
 // since the scheduler maps customNotes to pitch via `60 + s`, src/arp-scheduler.js).
 function setupMidiInput() {
-  if (!navigator.requestMIDIAccess) return;
+  if (!navigator.requestMIDIAccess) {
+    setStatus("MIDI no soportado en este navegador. El piano del arp sigue funcionando por touch.");
+    return;
+  }
   navigator.requestMIDIAccess({ sysex: false }).then((access) => {
     const handleMessage = (event) => {
       const [status, note, velocity] = event.data;
@@ -3445,10 +3464,16 @@ function setupMidiInput() {
     const attach = (input) => { input.onmidimessage = handleMessage; };
     access.inputs.forEach(attach);
     access.onstatechange = (event) => {
-      if (event.port.type === "input" && event.port.state === "connected") attach(event.port);
+      if (event.port.type === "input" && event.port.state === "connected") {
+        attach(event.port);
+        setStatus(`MIDI conectado: ${event.port.name || "dispositivo"}.`);
+      }
     };
-  }).catch(() => {
-    // No MIDI permission or no controller connected — the on-screen piano still works.
+    setStatus(access.inputs.size > 0
+      ? `MIDI listo: ${access.inputs.size} dispositivo(s) detectado(s).`
+      : "MIDI habilitado, pero no se detecto ningun controlador conectado.");
+  }).catch((error) => {
+    setStatus(`MIDI bloqueado: ${error.name}. El piano del arp sigue funcionando por touch.`);
   });
 }
 arpPianoClear.addEventListener("click", () => {
@@ -3491,7 +3516,6 @@ arpToggle.addEventListener("click", () => {
 });
 
 renderArp();
-setupMidiInput();
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
