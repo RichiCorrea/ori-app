@@ -672,6 +672,9 @@ const stopButton = document.querySelector("#stopButton");
 const tapTempo = document.querySelector("#tapTempo");
 const voiceModeToggle = document.querySelector("#voiceModeToggle");
 const pulse = document.querySelector("#pulse");
+const midiConnectedLed = document.querySelector("#midiConnectedLed");
+const midiActivityLed = document.querySelector("#midiActivityLed");
+const midiDiagStatus = document.querySelector("#midiDiagStatus");
 const statusText = document.querySelector("#statusText");
 const sceneGrid = document.querySelector("#sceneGrid");
 const sceneNameInput = document.querySelector("#sceneNameInput");
@@ -4267,16 +4270,43 @@ arpPiano.addEventListener("click", (e) => {
   toggleArpCustomNote(Number(key.dataset.note));
 });
 
+function setMidiDiagStatus(text) {
+  if (midiDiagStatus) midiDiagStatus.textContent = `MIDI: ${text}`;
+}
+
+function setMidiConnectedLed(isConnected) {
+  if (midiConnectedLed) midiConnectedLed.classList.toggle("on", isConnected);
+}
+
+function flashMidiActivityLed() {
+  if (!midiActivityLed) return;
+  midiActivityLed.classList.add("on");
+  window.setTimeout(() => midiActivityLed.classList.remove("on"), 110);
+}
+
 // MIDI controller input: note-on/off from a real keyboard populate the same
 // customNotes buffer as tapping the on-screen piano (semi = midiNote - 60,
 // since the scheduler maps customNotes to pitch via `60 + s`, src/arp-scheduler.js).
+// A visible diagnostic (arp-midi-diag: connected LED, note-activity LED, raw
+// status line) exists because failures here were happening with zero feedback
+// — the LEDs react to raw MIDI traffic even if a message doesn't parse as a
+// usable note, so a device that "does nothing" can be told apart from one
+// that the browser never even granted access to.
 function setupMidiInput() {
+  setMidiDiagStatus("solicitando acceso...");
   if (!navigator.requestMIDIAccess) {
+    setMidiDiagStatus("no soportado en este navegador.");
     setStatus("MIDI no soportado en este navegador. El piano del arp sigue funcionando por touch.");
     return;
   }
-  navigator.requestMIDIAccess({ sysex: false }).then((access) => {
+  const grantTimeout = new Promise((_, reject) => {
+    window.setTimeout(() => reject(new Error("timeout")), 4000);
+  });
+  Promise.race([navigator.requestMIDIAccess({ sysex: false }), grantTimeout]).then((access) => {
     const handleMessage = (event) => {
+      flashMidiActivityLed();
+      const bytes = Array.from(event.data);
+      setMidiDiagStatus(`recibido [${bytes.join(", ")}]`);
       const [status, note, velocity] = event.data;
       const command = status & 0xf0;
       const semi = note - 60;
@@ -4289,15 +4319,32 @@ function setupMidiInput() {
     const attach = (input) => { input.onmidimessage = handleMessage; };
     access.inputs.forEach(attach);
     access.onstatechange = (event) => {
-      if (event.port.type === "input" && event.port.state === "connected") {
+      if (event.port.type !== "input") return;
+      if (event.port.state === "connected") {
         attach(event.port);
+        setMidiConnectedLed(true);
+        setMidiDiagStatus(`conectado: ${event.port.name || "dispositivo"}.`);
         setStatus(`MIDI conectado: ${event.port.name || "dispositivo"}.`);
+      } else {
+        setMidiConnectedLed(access.inputs.size > 0);
+        setMidiDiagStatus(`desconectado: ${event.port.name || "dispositivo"}.`);
       }
     };
+    const deviceNames = Array.from(access.inputs.values()).map((input) => input.name || "dispositivo").join(", ");
+    setMidiConnectedLed(access.inputs.size > 0);
+    setMidiDiagStatus(access.inputs.size > 0
+      ? `listo. ${access.inputs.size} dispositivo(s): ${deviceNames}.`
+      : "habilitado, pero no se detecto ningun controlador conectado.");
     setStatus(access.inputs.size > 0
       ? `MIDI listo: ${access.inputs.size} dispositivo(s) detectado(s).`
       : "MIDI habilitado, pero no se detecto ningun controlador conectado.");
   }).catch((error) => {
+    if (error.message === "timeout") {
+      setMidiDiagStatus("el navegador nunca respondio al pedido de acceso (posible perdida de gesto de usuario, o permiso bloqueado por iOS).");
+      setStatus("MIDI no respondio. Revisa el diagnostico en el panel Arp.");
+      return;
+    }
+    setMidiDiagStatus(`bloqueado: ${error.name}. ${error.message || ""}`);
     setStatus(`MIDI bloqueado: ${error.name}. El piano del arp sigue funcionando por touch.`);
   });
 }

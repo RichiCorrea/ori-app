@@ -1236,6 +1236,51 @@ input[type="range"] {
   transform: scale(1.35);
 }
 
+.arp-midi-diag {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.5rem 0.7rem;
+  margin-bottom: 0.6rem;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.arp-midi-diag-row {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+}
+
+.arp-midi-diag-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  opacity: 0.8;
+}
+
+.arp-midi-led-group {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.arp-midi-led-group .pulse {
+  width: 12px;
+  height: 12px;
+}
+
+.arp-midi-led-tag {
+  font-size: 0.72rem;
+  opacity: 0.7;
+}
+
+.arp-midi-diag-status {
+  margin: 0;
+  font-size: 0.72rem;
+  opacity: 0.75;
+  word-break: break-word;
+}
+
 @media (min-width: 680px) {
   .scene-grid {
     grid-template-columns: repeat(3, 1fr);

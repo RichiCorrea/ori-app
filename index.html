@@ -7,7 +7,7 @@
     <title>ORI</title>
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="apple-touch-icon" href="./ORI-icon.png" />
-    <link rel="stylesheet" href="./styles.css?v=150" />
+    <link rel="stylesheet" href="./styles.css?v=151" />
   </head>
   <body>
     <main class="app">
@@ -307,6 +307,20 @@
             </label>
             <button id="arpNaturalAccent" class="utility-button active" type="button">Natural</button>
           </div>
+          <div class="arp-midi-diag">
+            <div class="arp-midi-diag-row">
+              <span class="arp-midi-diag-label">MIDI</span>
+              <div class="arp-midi-led-group">
+                <span class="arp-midi-led-tag">Conectado</span>
+                <div id="midiConnectedLed" class="pulse"></div>
+              </div>
+              <div class="arp-midi-led-group">
+                <span class="arp-midi-led-tag">Nota</span>
+                <div id="midiActivityLed" class="pulse"></div>
+              </div>
+            </div>
+            <p id="midiDiagStatus" class="arp-midi-diag-status">MIDI: sin iniciar (tocá Play).</p>
+          </div>
           <div class="arp-piano-wrap">
             <div class="arp-piano-header">
               <span class="arp-piano-label">Notes</span>
@@ -569,6 +583,6 @@
       </div>
     </div>
 
-    <script type="module" src="./app.js?v=150"></script>
+    <script type="module" src="./app.js?v=151"></script>
   </body>
 </html>
