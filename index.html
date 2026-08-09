@@ -7,7 +7,7 @@
     <title>ORI</title>
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="apple-touch-icon" href="./ORI-icon.png" />
-    <link rel="stylesheet" href="./styles.css?v=138" />
+    <link rel="stylesheet" href="./styles.css?v=139" />
   </head>
   <body>
     <main class="app">
@@ -167,8 +167,20 @@
               <option value="1_beat">1 beat</option>
               <option value="1_half_beat">Medio beat</option>
             </select>
+            <button id="loopPadMenuTrim" class="utility-button" type="button">Trim</button>
             <button id="loopPadMenuLoad" class="sample-load" type="button">Cargar</button>
             <button id="loopPadMenuClear" class="sample-load" type="button">Quitar</button>
+          </div>
+          <div id="loopPadTrimModal" class="instrument-menu loop-pad-trim-modal hidden">
+            <button id="loopPadTrimClose" class="loop-pad-menu-close" type="button" aria-label="Cerrar">×</button>
+            <strong id="loopPadTrimTitle">Trim</strong>
+            <canvas id="loopPadTrimCanvas" width="280" height="90"></canvas>
+            <div class="loop-pad-trim-readouts">
+              <span>Inicio <strong id="loopPadTrimStartReadout">0.00s</strong></span>
+              <span>Fin <strong id="loopPadTrimEndReadout">0.00s</strong></span>
+            </div>
+            <button id="loopPadTrimPreview" class="utility-button" type="button">Preview</button>
+            <button id="loopPadTrimDone" class="sample-load" type="button">Listo</button>
           </div>
           <input id="loopPadFileInput" class="sample-input" type="file" accept="audio/*,audio/mpeg,audio/wav,audio/wave,audio/x-wav,audio/mp4,audio/x-m4a,audio/aac" />
         </div>
@@ -551,6 +563,6 @@
       </div>
     </div>
 
-    <script type="module" src="./app.js?v=138"></script>
+    <script type="module" src="./app.js?v=139"></script>
   </body>
 </html>

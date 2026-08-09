@@ -872,6 +872,47 @@ button {
   line-height: 1;
 }
 
+.loop-pad-trim-modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 21;
+  width: min(320px, 88vw);
+  grid-template-columns: 1fr 1fr;
+}
+
+#loopPadTrimTitle {
+  display: block;
+  min-height: 28px;
+  padding-right: 40px;
+  grid-column: 1 / -1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#loopPadTrimCanvas {
+  grid-column: 1 / -1;
+  width: 100%;
+  height: 90px;
+  border-radius: 6px;
+  touch-action: none;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.loop-pad-trim-readouts {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.78rem;
+  color: rgba(247, 243, 232, 0.66);
+}
+
+.loop-pad-trim-readouts strong {
+  color: #f7f3e8;
+}
+
 #loopPadMenu label.slider {
   grid-column: 1 / -1;
 }

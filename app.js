@@ -498,6 +498,7 @@ const state = {
   loopPadNames: {},
   loopPadInstances: {},
   loopPadPendingStart: {},
+  loopPadTrimEditor: null,
   drumsEnabled: false,
   pendingDrumsEnabled: null,
   drumStep: 0,
@@ -720,6 +721,15 @@ const loopPadMenuFadeIn = document.querySelector("#loopPadMenuFadeIn");
 const loopPadMenuFadeInReadout = document.querySelector("#loopPadMenuFadeInReadout");
 const loopPadMenuFadeOut = document.querySelector("#loopPadMenuFadeOut");
 const loopPadMenuFadeOutReadout = document.querySelector("#loopPadMenuFadeOutReadout");
+const loopPadMenuTrim = document.querySelector("#loopPadMenuTrim");
+const loopPadTrimModal = document.querySelector("#loopPadTrimModal");
+const loopPadTrimClose = document.querySelector("#loopPadTrimClose");
+const loopPadTrimTitle = document.querySelector("#loopPadTrimTitle");
+const loopPadTrimCanvas = document.querySelector("#loopPadTrimCanvas");
+const loopPadTrimStartReadout = document.querySelector("#loopPadTrimStartReadout");
+const loopPadTrimEndReadout = document.querySelector("#loopPadTrimEndReadout");
+const loopPadTrimPreview = document.querySelector("#loopPadTrimPreview");
+const loopPadTrimDone = document.querySelector("#loopPadTrimDone");
 const loopPadMenuLoad = document.querySelector("#loopPadMenuLoad");
 const loopPadMenuClear = document.querySelector("#loopPadMenuClear");
 const loopPadFileInput = document.querySelector("#loopPadFileInput");
@@ -1017,6 +1027,102 @@ function updateLoopPadFadeSetting(slotId, edge, ms) {
   if (edge === "in") slot.fadeInMs = clamped;
   else slot.fadeOutMs = clamped;
   saveAppState();
+}
+
+function updateLoopPadTrim(slotId, startMs, endMs) {
+  const slot = getCurrentLoopSlot(slotId);
+  if (!slot) return;
+  slot.trim.startMs = Math.round(startMs);
+  slot.trim.endMs = Math.round(endMs);
+  saveAppState();
+}
+
+function extractWaveformPeaks(audioBuffer, targetWidth) {
+  const channelData = audioBuffer.getChannelData(0);
+  const blockSize = Math.max(1, Math.floor(channelData.length / targetWidth));
+  const peaks = [];
+  for (let i = 0; i < targetWidth; i++) {
+    const start = i * blockSize;
+    const end = Math.min(channelData.length, start + blockSize);
+    let min = 0;
+    let max = 0;
+    for (let j = start; j < end; j++) {
+      const v = channelData[j];
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+    peaks.push([min, max]);
+  }
+  return peaks;
+}
+
+function drawWaveform(ctx, peaks, width, height, trimStartRatio, trimEndRatio) {
+  ctx.clearRect(0, 0, width, height);
+  const mid = height / 2;
+  peaks.forEach(([min, max], i) => {
+    const ratio = i / peaks.length;
+    const inTrim = ratio >= trimStartRatio && ratio <= trimEndRatio;
+    ctx.strokeStyle = inTrim ? "#9fb8ef" : "rgba(159, 184, 239, 0.28)";
+    ctx.beginPath();
+    ctx.moveTo(i + 0.5, mid + min * mid);
+    ctx.lineTo(i + 0.5, mid + max * mid);
+    ctx.stroke();
+  });
+
+  ctx.strokeStyle = "#f0b35b";
+  ctx.lineWidth = 2;
+  [trimStartRatio, trimEndRatio].forEach((ratio) => {
+    const x = Math.round(ratio * width);
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, height);
+    ctx.stroke();
+  });
+}
+
+function renderLoopPadTrimEditor() {
+  const editor = state.loopPadTrimEditor;
+  if (!editor) return;
+  const ctx = loopPadTrimCanvas.getContext("2d");
+  const startRatio = editor.startMs / editor.durationMs;
+  const endRatio = editor.endMs / editor.durationMs;
+  drawWaveform(ctx, editor.peaks, loopPadTrimCanvas.width, loopPadTrimCanvas.height, startRatio, endRatio);
+  loopPadTrimStartReadout.textContent = `${(editor.startMs / 1000).toFixed(2)}s`;
+  loopPadTrimEndReadout.textContent = `${(editor.endMs / 1000).toFixed(2)}s`;
+}
+
+function openLoopPadTrimEditor(slotId) {
+  const slot = getCurrentLoopSlot(slotId);
+  const buffer = state.loopPadBuffers[slotId];
+  if (!slot || !buffer) return;
+  closeLoopPadMenu();
+
+  const durationMs = buffer.duration * 1000;
+  const peaks = extractWaveformPeaks(buffer, loopPadTrimCanvas.width);
+  state.loopPadTrimEditor = {
+    slotId,
+    peaks,
+    durationMs,
+    startMs: Math.min(slot.trim.startMs || 0, durationMs),
+    endMs: slot.trim.endMs === null ? durationMs : Math.min(slot.trim.endMs, durationMs),
+    dragging: null,
+  };
+  loopPadTrimTitle.textContent = slot.fileName || "Trim";
+  renderLoopPadTrimEditor();
+  loopPadTrimModal.classList.remove("hidden");
+  loopPadMenuBackdrop.classList.remove("hidden");
+}
+
+function closeLoopPadTrimEditor() {
+  loopPadTrimModal.classList.add("hidden");
+  loopPadMenuBackdrop.classList.add("hidden");
+  state.loopPadTrimEditor = null;
+}
+
+function loopPadTrimPointerToMs(event) {
+  const rect = loopPadTrimCanvas.getBoundingClientRect();
+  const x = Math.max(0, Math.min(rect.width, event.clientX - rect.left));
+  return (x / rect.width) * state.loopPadTrimEditor.durationMs;
 }
 
 function clearLoopPadSlot(slotId, showStatus = true) {
@@ -1678,17 +1784,34 @@ function triggerLoopPad(slotId, time = state.audioContext?.currentTime) {
   applyChannelGain("loop");
   stopLoopPad(slotId, 0.03); // retrigger always cuts any ringing instance and restarts from the top
 
+  const sourceDuration = state.loopPadBuffers[slotId]?.duration || buffer.duration;
+  const fwdStartSec = Math.max(0, Math.min(sourceDuration, (slot.trim.startMs || 0) / 1000));
+  const fwdEndSec = slot.trim.endMs === null ? sourceDuration : Math.max(fwdStartSec, Math.min(sourceDuration, slot.trim.endMs / 1000));
+  // Trim points are defined against the forward buffer's timeline (what the waveform
+  // editor shows); when playing the reversed buffer, mirror them to the matching window.
+  const trimStartSec = slot.reverse ? sourceDuration - fwdEndSec : fwdStartSec;
+  const trimEndSec = slot.reverse ? sourceDuration - fwdStartSec : fwdEndSec;
+  const trimDurationSec = Math.max(0.02, trimEndSec - trimStartSec);
+
   const source = state.audioContext.createBufferSource();
   const gain = state.audioContext.createGain();
   source.buffer = buffer;
-  source.loop = slot.type === "loop";
   source.connect(gain);
   gain.connect(state.loopGain);
 
   const fadeInSec = Math.max(0.001, slot.fadeInMs / 1000);
   gain.gain.setValueAtTime(0.0001, time);
   gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, slot.volume), time + fadeInSec);
-  source.start(time);
+
+  if (slot.type === "loop") {
+    source.loop = true;
+    source.loopStart = trimStartSec;
+    source.loopEnd = trimEndSec;
+    source.start(time, trimStartSec);
+  } else {
+    source.loop = false;
+    source.start(time, trimStartSec, trimDurationSec);
+  }
 
   const instance = { source, gain };
   if (slot.type === "oneshot") {
@@ -3329,7 +3452,10 @@ loopPadMenu.addEventListener("click", (event) => {
   event.stopPropagation();
 });
 
-loopPadMenuBackdrop.addEventListener("click", closeLoopPadMenu);
+loopPadMenuBackdrop.addEventListener("click", () => {
+  if (!loopPadTrimModal.classList.contains("hidden")) closeLoopPadTrimEditor();
+  else closeLoopPadMenu();
+});
 loopPadMenuClose.addEventListener("click", closeLoopPadMenu);
 
 loopPadMenuType.addEventListener("change", () => {
@@ -3400,6 +3526,64 @@ loopPadMenuClear.addEventListener("click", () => {
   if (!slotId) return;
   clearLoopPadSlot(slotId);
   loopPadMenuTitle.textContent = "Slot vacio";
+});
+
+loopPadMenuTrim.addEventListener("click", () => {
+  const slotId = loopPadMenu.dataset.slotId;
+  if (!slotId) return;
+  if (!state.loopPadBuffers[slotId]) {
+    setStatus("Esperando a que termine de decodificar el audio...");
+    return;
+  }
+  openLoopPadTrimEditor(slotId);
+});
+
+loopPadTrimModal.addEventListener("click", (event) => {
+  event.stopPropagation();
+});
+
+loopPadTrimClose.addEventListener("click", closeLoopPadTrimEditor);
+loopPadTrimDone.addEventListener("click", closeLoopPadTrimEditor);
+
+loopPadTrimPreview.addEventListener("click", async () => {
+  const editor = state.loopPadTrimEditor;
+  if (!editor) return;
+  const isUnlocked = await unlockAudio();
+  if (!isUnlocked) return;
+  triggerLoopPad(editor.slotId);
+});
+
+loopPadTrimCanvas.addEventListener("pointerdown", (event) => {
+  const editor = state.loopPadTrimEditor;
+  if (!editor) return;
+  const ms = loopPadTrimPointerToMs(event);
+  editor.dragging = Math.abs(ms - editor.startMs) <= Math.abs(ms - editor.endMs) ? "start" : "end";
+  loopPadTrimCanvas.setPointerCapture(event.pointerId);
+});
+
+loopPadTrimCanvas.addEventListener("pointermove", (event) => {
+  const editor = state.loopPadTrimEditor;
+  if (!editor || !editor.dragging) return;
+  const ms = loopPadTrimPointerToMs(event);
+  if (editor.dragging === "start") {
+    editor.startMs = Math.max(0, Math.min(ms, editor.endMs - 20));
+  } else {
+    editor.endMs = Math.min(editor.durationMs, Math.max(ms, editor.startMs + 20));
+  }
+  const slot = getCurrentLoopSlot(editor.slotId);
+  if (slot) {
+    slot.trim.startMs = Math.round(editor.startMs);
+    slot.trim.endMs = Math.round(editor.endMs);
+  }
+  renderLoopPadTrimEditor();
+});
+
+loopPadTrimCanvas.addEventListener("pointerup", (event) => {
+  const editor = state.loopPadTrimEditor;
+  if (!editor || !editor.dragging) return;
+  editor.dragging = null;
+  loopPadTrimCanvas.releasePointerCapture(event.pointerId);
+  updateLoopPadTrim(editor.slotId, editor.startMs, editor.endMs);
 });
 
 loopPadFileInput.addEventListener("change", (event) => {
