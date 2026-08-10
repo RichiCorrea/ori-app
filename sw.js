@@ -1,9 +1,9 @@
-const CACHE_NAME = "ori-v151";
+const CACHE_NAME = "ori-v166";
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./styles.css?v=151",
-  "./app.js?v=151",
+  "./styles.css?v=166",
+  "./app.js?v=166",
   "./src/music-data.js",
   "./src/drum-machine.js",
   "./src/storage.js",
@@ -15,7 +15,16 @@ const APP_SHELL = [
   "./src/knob.js",
   "./ORI-icon.svg",
   "./ORI-icon.png",
-  "./manifest.webmanifest"
+  "./manifest.webmanifest",
+  "./assets/drums/dead_drum/kick.wav",
+  "./assets/drums/dead_drum/snare.wav",
+  "./assets/drums/dead_drum/hat.wav",
+  "./assets/drums/lofi_percusion/kick.wav",
+  "./assets/drums/lofi_percusion/snare.wav",
+  "./assets/drums/lofi_percusion/hat.wav",
+  "./assets/drums/funk_br/kick.wav",
+  "./assets/drums/funk_br/snare.wav",
+  "./assets/drums/funk_br/perc.wav"
 ];
 
 self.addEventListener("install", (event) => {

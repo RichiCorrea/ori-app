@@ -9,6 +9,11 @@ export function getMeterConfig(meter = "4/4") {
   return timeSignatures[meter] || timeSignatures["4/4"];
 }
 
+// The funk_br groove is a hand-tuned 2-bar pattern (32 steps at 4/4's native
+// 1/16 resolution) — every other groove here is one bar long, so this needs
+// to be threaded explicitly wherever that pattern is (re)built.
+export const FUNK_BR_STEPS = 32;
+
 export function createDrumEvent(instrument, step, velocity = DRUM_NORMAL_VELOCITY, accent = false) {
   return {
     instrument,
@@ -29,8 +34,8 @@ export function legacyPatternEvents(pattern) {
   });
 }
 
-export function normalizeDrumPattern(pattern = createEmptyPattern(), meter = "4/4") {
-  const stepCount = getMeterConfig(meter).defaultGridResolution;
+export function normalizeDrumPattern(pattern = createEmptyPattern(), meter = "4/4", stepCountOverride) {
+  const stepCount = stepCountOverride || getMeterConfig(meter).defaultGridResolution;
   const rawEvents = Array.isArray(pattern.events) ? pattern.events : legacyPatternEvents(pattern);
   const events = rawEvents
     .filter((event) => drumInstruments.includes(event.instrument))
@@ -48,16 +53,16 @@ export function normalizeDrumPattern(pattern = createEmptyPattern(), meter = "4/
   };
 }
 
-export function clonePattern(pattern, meter = "4/4") {
-  const normalizedPattern = normalizeDrumPattern(pattern, meter);
+export function clonePattern(pattern, meter = "4/4", stepCountOverride) {
+  const normalizedPattern = normalizeDrumPattern(pattern, meter, stepCountOverride);
   return {
     name: normalizedPattern.name,
     events: normalizedPattern.events.map((event) => ({ ...event })),
   };
 }
 
-export function fitPatternToMeter(pattern, meter) {
-  return normalizeDrumPattern(pattern, meter);
+export function fitPatternToMeter(pattern, meter, stepCountOverride) {
+  return normalizeDrumPattern(pattern, meter, stepCountOverride);
 }
 
 export function getGroupStartSteps(meter = "4/4") {
@@ -97,6 +102,7 @@ export function getGrooveDefaultMeter(groove) {
     blues: "12/8",
     waltz: "3/4",
     bossa: "2/4",
+    funk_br: "4/4",
   };
   return defaults[groove] || "4/4";
 }
@@ -135,6 +141,18 @@ export function createGroovePattern(groove, meter) {
     addPatternHits(pattern, "snare", [2, 6, 10, 14], 0.72);
     addPatternHits(pattern, "hat", everyStep(0, 2, steps), 0.55);
     return fitPatternToMeter(pattern, patternMeter);
+  }
+
+  // Brazilian funk: hand-programmed 2-bar pattern at 130bpm/4/4, 1/16
+  // resolution (32 steps) — reference tempo/feel confirmed by ear, not the
+  // triplet-grid Tamborzão approximation this replaced. Needs FUNK_BR_STEPS
+  // (2 bars) explicitly since every other groove here is one bar long.
+  if (resolvedGroove === "funk_br") {
+    addPatternHits(pattern, "kick", [0, 10, 14, 15, 26, 30, 31], 1);
+    addPatternHits(pattern, "snare", [3, 6, 12, 19, 22, 28], 0.85);
+    addPatternHits(pattern, "hat", [0, 4, 8, 12, 16, 20, 24, 28], 0.68);
+    addPatternHits(pattern, "perc", [10, 16, 26], 0.72);
+    return fitPatternToMeter(pattern, patternMeter, FUNK_BR_STEPS);
   }
 
   if (resolvedGroove === "rock") {

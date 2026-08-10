@@ -583,6 +583,7 @@ button {
 
 .drum-editor {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   padding: 14px;
 }
 
@@ -758,6 +759,7 @@ button {
 .drum-editor-panel {
   position: relative;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
   padding-top: 10px;
 }
@@ -986,25 +988,96 @@ button {
   font-weight: 800;
 }
 
-.step-header,
-.drum-row {
-  display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
+.instrument-menu-level {
+  grid-column: 1 / -1;
+  display: flex;
   align-items: center;
   gap: 8px;
+  color: rgba(247, 243, 232, 0.7);
+  font-size: 0.72rem;
+}
+
+.instrument-menu-level input[type="range"] {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.instrument-menu-level span:last-child {
+  min-width: 34px;
+  text-align: right;
+}
+
+/* One frozen label column (K/S/H) on the left + a single scrolling block on
+   the right holding the step-number header and all three instrument rows —
+   they scroll together as one unit, like a spreadsheet's frozen first
+   column, instead of syncing separate scroll areas. */
+.drum-grid {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.drum-grid-labels {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 0 0 28px;
+}
+
+.drum-grid-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(240, 179, 91, 0.55) transparent;
+  padding-bottom: 4px; /* room for the scrollbar so it doesn't sit on the last row */
+}
+
+.drum-grid-scroll::-webkit-scrollbar {
+  height: 6px;
+}
+
+.drum-grid-scroll::-webkit-scrollbar-thumb {
+  background: rgba(240, 179, 91, 0.55);
+  border-radius: 3px;
+}
+
+.drum-grid-scroll::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .step-header {
   color: rgba(247, 243, 232, 0.56);
   font-size: 0.58rem;
   font-weight: 800;
+  height: 16px;
+}
+
+.grid-label-spacer {
+  height: 16px;
 }
 
 .step-grid {
   display: grid;
-  grid-template-columns: repeat(var(--step-count, 16), minmax(0, 1fr));
+  grid-template-columns: repeat(var(--step-count, 16), 26px);
   gap: 3px;
-  min-width: 0;
+}
+
+.instrument-label.hidden,
+.step-grid.hidden {
+  display: none;
+}
+
+.add-voice-button {
+  color: rgba(247, 243, 232, 0.5);
+  font-size: 1rem;
+  background: transparent;
+  border-style: dashed;
 }
 
 .step-number {
@@ -1016,9 +1089,9 @@ button {
   display: grid;
   place-items: center;
   width: 28px;
-  height: 28px;
+  height: 44.83px; /* matches .step-button's computed height (26px / 0.58 aspect-ratio) exactly */
   min-width: 28px;
-  min-height: 28px;
+  min-height: 0; /* the global button{} rule floors height at 48px otherwise, breaking row alignment */
   padding: 0;
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 6px;
@@ -1044,14 +1117,33 @@ button {
   touch-action: manipulation;
 }
 
-.step-button.group-start,
+/* Grid columns have a fixed width so the multi-bar grid scrolls predictably —
+   margin-based spacing would shrink these cells instead of adding a gap, so
+   beat/bar boundaries are marked with a left border overlay instead. */
+.step-button.group-start {
+  border-left: 2px solid rgba(255, 255, 255, 0.3);
+}
+
 .step-number.group-start {
-  margin-left: 4px;
+  border-left: 2px solid rgba(255, 255, 255, 0.22);
+  padding-left: 2px;
+}
+
+.step-button.bar-start {
+  border-left: 2px solid rgba(240, 179, 91, 0.65);
+}
+
+.step-number.bar-start {
+  border-left: 2px solid rgba(240, 179, 91, 0.55);
+  padding-left: 2px;
 }
 
 .step-button.group-start:first-child,
-.step-number.group-start:first-child {
-  margin-left: 0;
+.step-number.group-start:first-child,
+.step-button.bar-start:first-child,
+.step-number.bar-start:first-child {
+  border-left: none;
+  padding-left: 0;
 }
 
 .step-button.active {

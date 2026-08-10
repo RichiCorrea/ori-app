@@ -29,9 +29,57 @@ export const drumKits = {
     snareTone: 1150,
     hatTone: 6100,
   },
+  dead_drum: {
+    name: "Dead Drum",
+    kickLevel: 0.85,
+    snareLevel: 0.4,
+    hatLevel: 0.14,
+    kickStart: 60,
+    kickEnd: 33,
+    snareTone: 3300,
+    hatTone: 5400,
+    samples: {
+      kick: "assets/drums/dead_drum/kick.wav",
+      snare: "assets/drums/dead_drum/snare.wav",
+      hat: "assets/drums/dead_drum/hat.wav",
+    },
+  },
+  lofi_percusion: {
+    name: "Lofi Percusion",
+    kickLevel: 0.8,
+    snareLevel: 0.36,
+    hatLevel: 0.16,
+    kickStart: 78,
+    kickEnd: 45,
+    snareTone: 1100,
+    hatTone: 7400,
+    samples: {
+      kick: "assets/drums/lofi_percusion/kick.wav",
+      snare: "assets/drums/lofi_percusion/snare.wav",
+      hat: "assets/drums/lofi_percusion/hat.wav",
+    },
+  },
+  funk_br: {
+    name: "Funk BR",
+    kickLevel: 0.9,
+    snareLevel: 0.5,
+    hatLevel: 0.2,
+    percLevel: 0.55,
+    kickStart: 85,
+    kickEnd: 40,
+    snareTone: 1600,
+    hatTone: 8500,
+    percTone: 2600,
+    sampleGain: 0.5,
+    samples: {
+      kick: "assets/drums/funk_br/kick.wav",
+      snare: "assets/drums/funk_br/snare.wav",
+      perc: "assets/drums/funk_br/perc.wav",
+    },
+  },
 };
 
-export const drumInstruments = ["kick", "snare", "hat"];
+export const drumInstruments = ["kick", "snare", "hat", "perc"];
 export const DRUM_NORMAL_VELOCITY = 0.78;
 export const DRUM_ACCENT_VELOCITY = 1;
 
@@ -50,6 +98,9 @@ export const drumVoices = {
     soft: { name: "Soft", levelScale: 0.82, toneScale: 0.78, decay: 0.065 },
     bright: { name: "Bright", levelScale: 1, toneScale: 1.18, decay: 0.05 },
     tick: { name: "Tick", levelScale: 0.68, toneScale: 1.5, decay: 0.032 },
+  },
+  perc: {
+    click: { name: "Click", levelScale: 1, toneScale: 1, decay: 0.045 },
   },
 };
 

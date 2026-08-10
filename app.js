@@ -29,6 +29,7 @@ import {
   createEmptyPattern,
   createGroovePattern,
   fitPatternToMeter,
+  FUNK_BR_STEPS,
   getDrumEvent,
   getDrumEventsAtStep,
   getGrooveDefaultMeter,
@@ -139,9 +140,11 @@ function normalizeScene(scene) {
     groove: scene.groove || "auto",
     drumKitId: scene.drumKitId || null,
     drumRate: scene.drumRate || null,
+    drumStepCount: Number.isInteger(scene.drumStepCount) && scene.drumStepCount > 0 ? scene.drumStepCount : null,
     drumVoiceIds: scene.drumVoiceIds || null,
     drumSampleEnabled: scene.drumSampleEnabled || null,
     drumSampleNames: scene.drumSampleNames || null,
+    drumInstrumentLevel: scene.drumInstrumentLevel || null,
     padSettings: normalizePadSettings(scene.padSettings),
     drumsEnabled: typeof scene.drumsEnabled === "boolean" ? scene.drumsEnabled : false,
     loopGridSize,
@@ -157,13 +160,59 @@ function getMeterConfig(meter = scenes[state.sceneId]?.meter || "4/4") {
   return getConfigForMeter(meter);
 }
 
-function getCurrentStepCount() {
-  const full = getMeterConfig().defaultGridResolution;
+// Storage/pattern-length resolution, always expressed in the meter's own
+// finest (native) step units — e.g. 16 for one bar of 4/4 — regardless of
+// the current playback Rate. The Length control (16/24/32) overrides this
+// to span more than one bar; Rate never rescales it (see getStepsPerBar),
+// which keeps toggling 1/16 <-> 1/8 non-destructive exactly like before
+// Length existed.
+function getEffectiveStepCount(meter = scenes[state.sceneId]?.meter || "4/4") {
+  return state.drumStepCount || getMeterConfig(meter).defaultGridResolution;
+}
+
+// How many real-time trigger steps make up ONE bar at the current Rate —
+// this drives audio scheduling (advanceDrums) and must stay independent of
+// Length: a longer pattern (more bars) plays at the exact same tempo/step
+// speed as a one-bar pattern, it just takes longer to loop back to step 0.
+function getStepsPerBar(meter = scenes[state.sceneId]?.meter || "4/4") {
+  const full = getMeterConfig(meter).defaultGridResolution;
   return state.drumSubdivision === "1/8" ? Math.floor(full / 2) : full;
 }
 
+// Playback/UI step count: the pattern's full Length (which may span several
+// bars), thinned by the current Rate — e.g. a 2-bar pattern at 1/8 shows/
+// plays 16 steps instead of 32. Rate never touches storage (see
+// getEffectiveStepCount), it only decides how much of it is visible/played
+// at once, same non-destructive trick the app already used for Rate before
+// Length existed.
+function getCurrentStepCount() {
+  const full = getEffectiveStepCount();
+  return state.drumSubdivision === "1/8" ? Math.floor(full / 2) : full;
+}
+
+// Accent-group start positions are authored against one bar of the meter's
+// own natural resolution (same accentGroups the metronome/click uses) —
+// when Length spans multiple bars, that same one-bar grouping is repeated
+// once per bar instead of being stretched across the whole pattern, so the
+// musical grouping stays exactly as defined by the meter.
 function getGroupStartSteps(meter = scenes[state.sceneId]?.meter || "4/4") {
-  return getMeterGroupStartSteps(meter);
+  const naturalStarts = getMeterGroupStartSteps(meter);
+  const naturalTotal = getMeterConfig(meter).defaultGridResolution;
+  const total = getEffectiveStepCount(meter);
+  const bars = Math.max(1, Math.round(total / naturalTotal));
+  const starts = [];
+  for (let bar = 0; bar < bars; bar++) {
+    naturalStarts.forEach((step) => starts.push(step + bar * naturalTotal));
+  }
+  return starts;
+}
+
+function buildGroovePatternForScene(sceneId) {
+  const scene = scenes[sceneId];
+  // funk_br is the one groove that's 2 bars long instead of 1 (see FUNK_BR_STEPS) —
+  // the scene's Length needs to follow it so the second bar isn't clipped off.
+  scene.drumStepCount = scene.groove === "funk_br" ? FUNK_BR_STEPS : null;
+  return normalizeDrumPattern(createGroovePattern(scene.groove || "auto", scene.meter), scene.meter, scene.drumStepCount || undefined);
 }
 
 function getClickAccentBeats() {
@@ -309,6 +358,8 @@ function saveAppState() {
     drumVoiceIds: state.drumVoiceIds,
     drumRate: state.drumRate,
     drumSubdivision: state.drumSubdivision,
+    drumStepCount: state.drumStepCount,
+    drumPercEnabled: state.drumPercEnabled,
     clickMode: state.clickMode,
     volumes: state.volumes,
     muted: state.muted,
@@ -341,9 +392,9 @@ function applyAppSnapshot(snapshot) {
     Object.keys(sceneDrumPatterns).forEach((sceneId) => delete sceneDrumPatterns[sceneId]);
     sceneOrder.forEach((sceneId) => {
       if (snapshot.sceneDrumPatterns[sceneId]) {
-        sceneDrumPatterns[sceneId] = fitPatternToMeter(snapshot.sceneDrumPatterns[sceneId], scenes[sceneId].meter);
+        sceneDrumPatterns[sceneId] = fitPatternToMeter(snapshot.sceneDrumPatterns[sceneId], scenes[sceneId].meter, scenes[sceneId].drumStepCount || undefined);
       } else if (scenes[sceneId]) {
-        sceneDrumPatterns[sceneId] = createGroovePattern(scenes[sceneId].groove || "auto", scenes[sceneId].meter);
+        sceneDrumPatterns[sceneId] = buildGroovePatternForScene(sceneId);
       }
     });
   }
@@ -367,6 +418,14 @@ function applyAppSnapshot(snapshot) {
 
   if (["1/8", "1/16"].includes(snapshot.drumSubdivision)) {
     state.drumSubdivision = snapshot.drumSubdivision;
+  }
+
+  if (Number.isInteger(snapshot.drumStepCount) && snapshot.drumStepCount > 0) {
+    state.drumStepCount = snapshot.drumStepCount;
+  }
+
+  if (typeof snapshot.drumPercEnabled === "boolean") {
+    state.drumPercEnabled = snapshot.drumPercEnabled;
   }
 
   if (["pulse", "subdivision"].includes(snapshot.clickMode)) {
@@ -447,7 +506,7 @@ function ensureSceneState() {
   sceneOrder.forEach((sceneId) => {
     scenes[sceneId] = normalizeScene(scenes[sceneId]);
     if (!sceneDrumPatterns[sceneId]) {
-      sceneDrumPatterns[sceneId] = createGroovePattern(scenes[sceneId].groove || "auto", scenes[sceneId].meter);
+      sceneDrumPatterns[sceneId] = buildGroovePatternForScene(sceneId);
     }
   });
 }
@@ -478,6 +537,7 @@ const state = {
   displayBar: 1,
   displayBeat: 1,
   tickTimer: null,
+  stopFadeTimeoutId: null,
   nextPulseTime: 0,
   currentPulseIndex: 0,
   scheduledUiEvents: [],
@@ -508,34 +568,48 @@ const state = {
   drumTimers: [],
   drumRate: "normal",
   drumSubdivision: "1/16",
+  drumStepCount: null,
   drumPatternId: "soft",
   drumKitId: "soft",
   drumVoiceIds: {
     kick: "deep",
     snare: "warm",
     hat: "soft",
+    perc: "click",
   },
   drumSampleBuffers: {
     kick: null,
     snare: null,
     hat: null,
+    perc: null,
   },
   drumSampleData: {
     kick: null,
     snare: null,
     hat: null,
+    perc: null,
   },
   drumSampleNames: {
     kick: "",
     snare: "",
     hat: "",
+    perc: "",
   },
   drumSampleLibrary: {},
   drumSampleEnabled: {
     kick: false,
     snare: false,
     hat: false,
+    perc: false,
   },
+  drumPercEnabled: false,
+  drumInstrumentLevel: {
+    kick: 1,
+    snare: 1,
+    hat: 1,
+    perc: 1,
+  },
+  kitSampleBuffers: {},
   volumes: {
     pad: 0.84,
     loop: 0.9,
@@ -693,19 +767,26 @@ const resetPattern = document.querySelector("#resetPattern");
 const accentModeToggle = document.querySelector("#accentModeToggle");
 const drumSubdivisionToggle = document.querySelector("#drumSubdivisionToggle");
 const drumRateSelect = document.querySelector("#drumRateSelect");
+const drumLengthSelect = document.querySelector("#drumLengthSelect");
 const instrumentMenu = document.querySelector("#instrumentMenu");
 const instrumentMenuTitle = document.querySelector("#instrumentMenuTitle");
 const instrumentMenuSelect = document.querySelector("#instrumentMenuSelect");
 const instrumentMenuLoad = document.querySelector("#instrumentMenuLoad");
 const instrumentMenuBase = document.querySelector("#instrumentMenuBase");
+const instrumentMenuLevel = document.querySelector("#instrumentMenuLevel");
+const instrumentMenuLevelReadout = document.querySelector("#instrumentMenuLevelReadout");
 const kickSampleInput = document.querySelector("#kickSampleInput");
 const snareSampleInput = document.querySelector("#snareSampleInput");
 const hatSampleInput = document.querySelector("#hatSampleInput");
+const percSampleInput = document.querySelector("#percSampleInput");
 const sampleInputs = {
   kick: kickSampleInput,
   snare: snareSampleInput,
   hat: hatSampleInput,
+  perc: percSampleInput,
 };
+const addPercVoiceButton = document.querySelector("#addPercVoiceButton");
+const percRowLabel = document.querySelector("#percRowLabel");
 const loopPadsToggle = document.querySelector("#loopPadsToggle");
 const loopPadsToggleIcon = document.querySelector("#loopPadsToggleIcon");
 const loopPadsPanel = document.querySelector("#loopPadsPanel");
@@ -741,6 +822,7 @@ const stepContainers = {
   kick: document.querySelector("#kickSteps"),
   snare: document.querySelector("#snareSteps"),
   hat: document.querySelector("#hatSteps"),
+  perc: document.querySelector("#percSteps"),
 };
 
 function setStatus(message) {
@@ -784,6 +866,7 @@ function renderTransport() {
   drumMute.classList.toggle("active", state.muted.drum);
   arpMute.classList.toggle("active", state.muted.arp);
   drumRateSelect.value = state.drumRate;
+  drumLengthSelect.value = String(getCurrentStepCount());
   drumSubdivisionToggle.textContent = state.drumSubdivision;
   drumSubdivisionToggle.classList.toggle("active", state.drumSubdivision === "1/16");
   accentModeToggle.classList.toggle("active", state.ui.accentEditMode);
@@ -837,14 +920,15 @@ function renderSceneControls() {
 }
 
 function getCurrentDrumPattern() {
-  sceneDrumPatterns[state.sceneId] = normalizeDrumPattern(sceneDrumPatterns[state.sceneId], scenes[state.sceneId].meter);
+  sceneDrumPatterns[state.sceneId] = normalizeDrumPattern(sceneDrumPatterns[state.sceneId], scenes[state.sceneId].meter, state.drumStepCount || undefined);
   return sceneDrumPatterns[state.sceneId];
 }
 
 function renderDrumEditor() {
-  stepHeader.innerHTML = "<span></span><div class=\"step-grid\" id=\"stepNumbers\"></div>";
+  stepHeader.innerHTML = "<div class=\"step-grid\" id=\"stepNumbers\"></div>";
   const stepNumbers = document.querySelector("#stepNumbers");
-  const { defaultGridResolution: fullSteps } = getMeterConfig();
+  const fullSteps = getEffectiveStepCount();
+  const naturalStepsPerBar = getMeterConfig().defaultGridResolution;
   const groupStarts = getGroupStartSteps();
   const visibleCount = getCurrentStepCount();
   const stepFactor = fullSteps / visibleCount; // 1 for 1/16, 2 for 1/8
@@ -855,10 +939,12 @@ function renderDrumEditor() {
   for (let v = 0; v < visibleCount; v++) {
     const internalStep = v * stepFactor;
     const isGroupStart = groupStarts.includes(internalStep);
+    const isBarStart = internalStep % naturalStepsPerBar === 0;
     if (isGroupStart) beatCount++;
     const number = document.createElement("span");
     number.className = "step-number";
     number.classList.toggle("group-start", isGroupStart);
+    number.classList.toggle("bar-start", isBarStart);
     number.textContent = isGroupStart ? String(beatCount) : "";
     stepNumbers.appendChild(number);
   }
@@ -875,8 +961,19 @@ function renderDrumEditor() {
       button.dataset.instrument = instrument;
       button.dataset.step = String(internalStep);
       button.classList.toggle("group-start", isGroupStart);
+      button.classList.toggle("bar-start", internalStep % naturalStepsPerBar === 0);
       button.setAttribute("aria-label", `${instrument} step ${v + 1}`);
+      // The grid scrolls horizontally now, so a drag that starts on a step
+      // button must not also toggle it — only fire the tap if the pointer
+      // didn't move (i.e. it wasn't a scroll gesture that happened to end here).
+      let downX = 0;
+      let downY = 0;
+      button.addEventListener("pointerdown", (event) => {
+        downX = event.clientX;
+        downY = event.clientY;
+      });
       button.addEventListener("pointerup", (event) => {
+        if (Math.abs(event.clientX - downX) > 8 || Math.abs(event.clientY - downY) > 8) return;
         event.preventDefault();
         handleDrumStepTap(instrument, internalStep);
       });
@@ -889,11 +986,28 @@ function renderDrumEditor() {
     }
   });
 
+  syncPercVoiceVisibility();
   renderDrumSteps();
 }
 
+// The 4th voice (perc) only shows up when it's actually in use — either the
+// user asked for it via the + button, or the current kit/pattern already
+// uses it (e.g. picking the Funk BR kit or groove) — instead of always
+// showing a row nothing uses.
+function isPercRowVisible() {
+  if (state.drumPercEnabled) return true;
+  return getCurrentDrumPattern().events.some((event) => event.instrument === "perc");
+}
+
+function syncPercVoiceVisibility() {
+  const visible = isPercRowVisible();
+  percRowLabel.classList.toggle("hidden", !visible);
+  stepContainers.perc.classList.toggle("hidden", !visible);
+  addPercVoiceButton.classList.toggle("hidden", visible);
+}
+
 function renderDrumSteps() {
-  const fullCount = getMeterConfig().defaultGridResolution;
+  const fullCount = getEffectiveStepCount();
   const pattern = getCurrentDrumPattern();
   Object.entries(stepContainers).forEach(([instrument, container]) => {
     container.querySelectorAll(".step-button").forEach((button) => {
@@ -1416,10 +1530,12 @@ function handleDrumStepDoubleTap(instrument, step) {
 function resetCurrentDrumPattern() {
   const scene = scenes[state.sceneId];
   if (scene.groove === "auto") {
+    state.drumStepCount = null;
     sceneDrumPatterns[state.sceneId] = createEmptyPattern("empty");
   } else {
     scene.meter = getGrooveDefaultMeter(scene.groove);
-    sceneDrumPatterns[state.sceneId] = createGroovePattern(scene.groove, scene.meter);
+    sceneDrumPatterns[state.sceneId] = buildGroovePatternForScene(state.sceneId);
+    state.drumStepCount = scene.drumStepCount;
   }
   state.drumPatternId = `groove:${scene.groove || "auto"}`;
   state.drumStep = 0;
@@ -1522,11 +1638,19 @@ function getNextDrumVoiceId(instrument) {
   return voiceIds[(currentIndex + 1) % voiceIds.length];
 }
 
+// Per-instrument trim (0-1.5, default 1 = unity) — a kit's kick/snare/hat/perc
+// don't always come pre-balanced against each other, so this lets each one be
+// pulled down (or boosted a bit) independently of the shared drum bus volume.
+function getInstrumentLevel(instrument) {
+  return state.drumInstrumentLevel[instrument] ?? 1;
+}
+
 function getInstrumentLabel(instrument) {
   return {
     kick: "Kick",
     snare: "Snare",
     hat: "Hi-hat",
+    perc: "Perc",
   }[instrument] || instrument;
 }
 
@@ -1568,7 +1692,47 @@ function playDrumSample(instrument, time, velocity = 1) {
   const source = state.audioContext.createBufferSource();
   const gain = state.audioContext.createGain();
   source.buffer = buffer;
-  gain.gain.setValueAtTime(Math.max(0.001, velocity), time);
+  gain.gain.setValueAtTime(Math.max(0.001, velocity * getInstrumentLevel(instrument)), time);
+  source.connect(gain);
+  gain.connect(state.drumGain);
+  source.start(time);
+  return true;
+}
+
+// Loads the factory-bundled samples (if any) for a kit — kick/snare/hat are
+// each optional; instruments without a bundled sample keep using the
+// existing synth voices. Cached per kit so switching back and forth doesn't
+// refetch.
+async function loadKitSamples(kitId) {
+  if (!state.audioContext) return;
+  const kit = drumKits[kitId];
+  if (!kit || !kit.samples) return;
+  if (!state.kitSampleBuffers[kitId]) state.kitSampleBuffers[kitId] = {};
+  const cache = state.kitSampleBuffers[kitId];
+
+  await Promise.all(
+    Object.entries(kit.samples).map(async ([instrument, url]) => {
+      if (!url || cache[instrument]) return;
+      try {
+        const response = await fetch(url);
+        const arrayBuffer = await response.arrayBuffer();
+        cache[instrument] = await state.audioContext.decodeAudioData(arrayBuffer);
+      } catch (error) {
+        cache[instrument] = null;
+      }
+    })
+  );
+}
+
+function playKitSample(instrument, time, velocity = 1) {
+  const buffer = state.kitSampleBuffers[state.drumKitId]?.[instrument];
+  if (!buffer) return false;
+
+  const sampleGain = drumKits[state.drumKitId]?.sampleGain ?? 1;
+  const source = state.audioContext.createBufferSource();
+  const gain = state.audioContext.createGain();
+  source.buffer = buffer;
+  gain.gain.setValueAtTime(Math.max(0.001, velocity * getInstrumentLevel(instrument) * sampleGain), time);
   source.connect(gain);
   gain.connect(state.drumGain);
   source.start(time);
@@ -1770,6 +1934,7 @@ async function unlockAudio() {
   }
   await decodeStoredDrumSamples();
   await decodeStoredLoopPadSamples();
+  await loadKitSamples(state.drumKitId);
   renderLoopPadStates();
 
   // Starting an oscillator on a user gesture is what actually satisfies iOS's
@@ -2039,6 +2204,7 @@ function applyPendingDrums() {
 
 function playKick(time, velocity = 1) {
   if (playDrumSample("kick", time, velocity)) return;
+  if (playKitSample("kick", time, velocity)) return;
 
   const kit = drumKits[state.drumKitId];
   const voice = getDrumVoice("kick");
@@ -2046,7 +2212,7 @@ function playKick(time, velocity = 1) {
   const oscillator = state.audioContext.createOscillator();
 
   gain.gain.setValueAtTime(0.0001, time);
-  gain.gain.exponentialRampToValueAtTime(kit.kickLevel * voice.levelScale * velocity, time + 0.01);
+  gain.gain.exponentialRampToValueAtTime(kit.kickLevel * voice.levelScale * velocity * getInstrumentLevel("kick"), time + 0.01);
   gain.gain.exponentialRampToValueAtTime(0.0001, time + voice.decay);
   oscillator.type = "sine";
   oscillator.frequency.setValueAtTime(kit.kickStart * voice.startScale, time);
@@ -2059,6 +2225,7 @@ function playKick(time, velocity = 1) {
 
 function playSnare(time, velocity = 1) {
   if (playDrumSample("snare", time, velocity)) return;
+  if (playKitSample("snare", time, velocity)) return;
 
   const kit = drumKits[state.drumKitId];
   const voice = getDrumVoice("snare");
@@ -2077,7 +2244,7 @@ function playSnare(time, velocity = 1) {
   filter.frequency.setValueAtTime(kit.snareTone * voice.toneScale, time);
   filter.Q.setValueAtTime(voice.q, time);
   gain.gain.setValueAtTime(0.0001, time);
-  gain.gain.exponentialRampToValueAtTime(kit.snareLevel * voice.levelScale * velocity, time + 0.01);
+  gain.gain.exponentialRampToValueAtTime(kit.snareLevel * voice.levelScale * velocity * getInstrumentLevel("snare"), time + 0.01);
   gain.gain.exponentialRampToValueAtTime(0.0001, time + Math.max(0.04, voice.decay - 0.02));
   noise.buffer = buffer;
   noise.connect(filter);
@@ -2089,6 +2256,7 @@ function playSnare(time, velocity = 1) {
 
 function playHat(time, velocity = 1) {
   if (playDrumSample("hat", time, velocity)) return;
+  if (playKitSample("hat", time, velocity)) return;
 
   const kit = drumKits[state.drumKitId];
   const voice = getDrumVoice("hat");
@@ -2106,7 +2274,7 @@ function playHat(time, velocity = 1) {
   filter.type = "highpass";
   filter.frequency.setValueAtTime(kit.hatTone * voice.toneScale, time);
   gain.gain.setValueAtTime(0.0001, time);
-  gain.gain.exponentialRampToValueAtTime(kit.hatLevel * voice.levelScale * velocity, time + 0.005);
+  gain.gain.exponentialRampToValueAtTime(kit.hatLevel * voice.levelScale * velocity * getInstrumentLevel("hat"), time + 0.005);
   gain.gain.exponentialRampToValueAtTime(0.0001, time + Math.max(0.02, voice.decay - 0.01));
   noise.buffer = buffer;
   noise.connect(filter);
@@ -2116,10 +2284,43 @@ function playHat(time, velocity = 1) {
   noise.stop(time + voice.decay);
 }
 
+function playPerc(time, velocity = 1) {
+  if (playDrumSample("perc", time, velocity)) return;
+  if (playKitSample("perc", time, velocity)) return;
+
+  const kit = drumKits[state.drumKitId];
+  const voice = getDrumVoice("perc");
+  const percLevel = kit.percLevel ?? 0.5;
+  const percTone = kit.percTone ?? 2600;
+  const bufferSize = state.audioContext.sampleRate * voice.decay;
+  const buffer = state.audioContext.createBuffer(1, bufferSize, state.audioContext.sampleRate);
+  const data = buffer.getChannelData(0);
+  const noise = state.audioContext.createBufferSource();
+  const filter = state.audioContext.createBiquadFilter();
+  const gain = state.audioContext.createGain();
+
+  for (let index = 0; index < bufferSize; index += 1) {
+    data[index] = (Math.random() * 2 - 1) * (1 - index / bufferSize);
+  }
+
+  filter.type = "bandpass";
+  filter.frequency.setValueAtTime(percTone * voice.toneScale, time);
+  filter.Q.setValueAtTime(1.4, time);
+  gain.gain.setValueAtTime(0.0001, time);
+  gain.gain.exponentialRampToValueAtTime(percLevel * voice.levelScale * velocity * getInstrumentLevel("perc"), time + 0.004);
+  gain.gain.exponentialRampToValueAtTime(0.0001, time + voice.decay);
+  noise.buffer = buffer;
+  noise.connect(filter);
+  filter.connect(gain);
+  gain.connect(state.drumGain);
+  noise.start(time);
+  noise.stop(time + voice.decay + 0.01);
+}
+
 function playDrumStep(time = state.audioContext?.currentTime) {
   if (!state.audioContext || !state.drumsEnabled) return null;
 
-  const fullCount = getMeterConfig().defaultGridResolution;
+  const fullCount = getEffectiveStepCount();
   const stepCount = getCurrentStepCount();
   const stepFactor = fullCount / stepCount;
   const localStep = state.drumStep % stepCount;
@@ -2131,6 +2332,7 @@ function playDrumStep(time = state.audioContext?.currentTime) {
     if (event.instrument === "kick") playKick(time, event.velocity);
     if (event.instrument === "snare") playSnare(time, event.velocity);
     if (event.instrument === "hat") playHat(time, event.velocity);
+    if (event.instrument === "perc") playPerc(time, event.velocity);
   });
 
   state.drumStep = (state.drumStep + 1) % stepCount;
@@ -2144,7 +2346,7 @@ function clearDrumTimers() {
 
 function advanceDrums(pulseTime, beatDurationSeconds) {
   const config = getMeterConfig();
-  const baseStepsPerPulse = getCurrentStepCount() / config.pulseCount;
+  const baseStepsPerPulse = getStepsPerBar() / config.pulseCount;
   const rateMultipliers = { half: 0.5, normal: 1, double: 2, quad: 4 };
   const exactSteps = baseStepsPerPulse * (rateMultipliers[state.drumRate] ?? 1);
   const scheduledSteps = [];
@@ -2774,6 +2976,10 @@ async function play() {
     setStatus(`Audio bloqueado por iOS. Estado: ${state.audioContext.state}`);
     return;
   }
+  if (state.stopFadeTimeoutId) {
+    window.clearTimeout(state.stopFadeTimeoutId);
+    state.stopFadeTimeoutId = null;
+  }
   state.isPlaying = true;
   ["pad", "loop", "click", "drum", "arp"].forEach(applyChannelGain); // undo any Stop fade-to-silence
   startPadForScene(state.sceneId);
@@ -2797,6 +3003,23 @@ function fadeChannelsToSilence(duration) {
   });
 }
 
+// Holds each channel at its current gain through `startTime`, then ramps down
+// to silence by `endTime` — used by Stop to fade out over a musical bar
+// instead of cutting instantly.
+function fadeChannelsOverWindow(startTime, endTime) {
+  if (!state.audioContext) return;
+  const now = state.audioContext.currentTime;
+  ["pad", "loop", "click", "drum", "arp"].forEach((channel) => {
+    const node = state[`${channel}Gain`];
+    if (!node) return;
+    const currentValue = Math.max(node.gain.value, 0.0001);
+    node.gain.cancelScheduledValues(now);
+    node.gain.setValueAtTime(currentValue, now);
+    node.gain.setValueAtTime(currentValue, startTime);
+    node.gain.exponentialRampToValueAtTime(0.0001, endTime);
+  });
+}
+
 function pause() {
   state.isPlaying = false;
   window.clearInterval(state.tickTimer);
@@ -2811,8 +3034,8 @@ function pause() {
   renderTransport();
 }
 
-function stop() {
-  fadeChannelsToSilence(0.15); // brief, smooth cut instead of an instant one; channel gains are restored on next Play
+function finishStop() {
+  fadeChannelsToSilence(0.05); // safety cut in case the scheduled bar-fade already reached silence
   pause();
   state.bar = 1;
   state.beat = 1;
@@ -2829,6 +3052,38 @@ function stop() {
   renderSceneButtons();
   renderTransport();
   renderLoopPadStates();
+}
+
+// Stop doesn't cut immediately: the current bar finishes normally, then
+// everything fades to silence over the following bar before the transport
+// actually stops. Pressing Stop again while that fade is running cuts it
+// short (immediate stop) as an escape hatch.
+function stop() {
+  if (!state.isPlaying || !state.audioContext) {
+    finishStop();
+    return;
+  }
+  if (state.stopFadeTimeoutId) {
+    window.clearTimeout(state.stopFadeTimeoutId);
+    state.stopFadeTimeoutId = null;
+    finishStop();
+    return;
+  }
+
+  const beatDurationSeconds = 60 / state.bpm;
+  const beatsPerBar = getBeatsPerBar();
+  const beatsUntilNextBar = beatsPerBar - state.beat + 1;
+  const barSeconds = beatDurationSeconds * beatsPerBar;
+  const nextBarTime = state.nextPulseTime + beatsUntilNextBar * beatDurationSeconds;
+  const stopTime = nextBarTime + barSeconds;
+
+  fadeChannelsOverWindow(nextBarTime, stopTime);
+  setStatus("Deteniendo al final del proximo compas...");
+  const delayMs = Math.max(0, (stopTime - state.audioContext.currentTime) * 1000);
+  state.stopFadeTimeoutId = window.setTimeout(() => {
+    state.stopFadeTimeoutId = null;
+    finishStop();
+  }, delayMs);
 }
 
 function setBpm(bpm, restartScheduler = true) {
@@ -2872,7 +3127,9 @@ function applyScenePresetSettings(sceneId) {
 
   if (scene.drumKitId && drumKits[scene.drumKitId]) {
     state.drumKitId = scene.drumKitId;
+    loadKitSamples(state.drumKitId);
   }
+  state.drumStepCount = scene.drumStepCount || null;
   state.drumsEnabled = typeof scene.drumsEnabled === "boolean" ? scene.drumsEnabled : false;
   stopAllLoopPads(1.4); // same crossfade duration as the pad engine (startPadForScene/stopPad)
   state.loopPadPendingStart = {};
@@ -2900,6 +3157,10 @@ function applyScenePresetSettings(sceneId) {
       }
     });
   }
+  drumInstruments.forEach((instrument) => {
+    const level = scene.drumInstrumentLevel?.[instrument];
+    state.drumInstrumentLevel[instrument] = typeof level === "number" ? level : 1;
+  });
   drumInstruments.forEach((instrument) => {
     const hasScenePreference = scene.drumSampleEnabled && typeof scene.drumSampleEnabled[instrument] === "boolean";
     state.drumSampleEnabled[instrument] = hasScenePreference ? scene.drumSampleEnabled[instrument] : false;
@@ -3076,16 +3337,19 @@ function saveCurrentPreset() {
   scene.meter = nextMeter;
   scene.drumKitId = state.drumKitId;
   scene.drumRate = state.drumRate;
+  if (previousMeter !== nextMeter) state.drumStepCount = null; // Length is bars-of-the-current-meter; a new meter starts back at one bar
+  scene.drumStepCount = state.drumStepCount;
   scene.drumVoiceIds = { ...state.drumVoiceIds };
   scene.drumSampleEnabled = { ...state.drumSampleEnabled };
   scene.drumSampleNames = { ...state.drumSampleNames };
+  scene.drumInstrumentLevel = { ...state.drumInstrumentLevel };
   scene.padSettings = normalizePadSettings(scene.padSettings);
   scene.arpSettings = snapshotArpSettings();
   if (previousMeter !== nextMeter) {
     scene.groove = "auto";
     sceneDrumPatterns[state.sceneId] = createEmptyPattern("empty");
   } else {
-    sceneDrumPatterns[state.sceneId] = fitPatternToMeter(sceneDrumPatterns[state.sceneId], nextMeter);
+    sceneDrumPatterns[state.sceneId] = fitPatternToMeter(sceneDrumPatterns[state.sceneId], nextMeter, state.drumStepCount || undefined);
   }
   if (state.beat > getBeatsPerBar()) {
     state.beat = 1;
@@ -3107,6 +3371,7 @@ function previewSceneMeterChange() {
 
   scene.meter = nextMeter;
   scene.groove = "auto";
+  state.drumStepCount = null;
   sceneDrumPatterns[state.sceneId] = createEmptyPattern("empty");
   state.drumStep = 0;
   state.currentUiDrumStep = -1;
@@ -3269,7 +3534,7 @@ async function duplicateCurrentScene() {
     loopSlots: (sourceScene.loopSlots || []).map((slot) => ({ ...slot, quantize: { ...slot.quantize }, trim: { ...slot.trim } })),
     name: `${sourceScene.name} Copy`,
   };
-  sceneDrumPatterns[sceneId] = clonePattern(getCurrentDrumPattern(), scenes[state.sceneId].meter);
+  sceneDrumPatterns[sceneId] = clonePattern(getCurrentDrumPattern(), scenes[state.sceneId].meter, scenes[state.sceneId].drumStepCount || undefined);
   const samplesCopyFailed = await duplicateSceneSamples(sourceSceneId, sceneId);
 
   const currentIndex = sceneOrder.indexOf(state.sceneId);
@@ -3348,6 +3613,26 @@ drumRateSelect.addEventListener("change", (event) => {
   renderTransport();
 });
 
+drumLengthSelect.addEventListener("change", (event) => {
+  const meter = scenes[state.sceneId].meter;
+  const rateFactor = state.drumSubdivision === "1/8" ? 2 : 1;
+  const selectedSteps = Number(event.target.value); // steps at the CURRENT rate, e.g. "16" at 1/8 = 2 bars of 4/4
+  const newFinestLength = selectedSteps * rateFactor;
+  state.drumStepCount = newFinestLength;
+  // existing hits stay exactly where they are (new bars start empty); no rescale.
+  sceneDrumPatterns[state.sceneId] = normalizeDrumPattern(getCurrentDrumPattern(), meter, newFinestLength);
+  state.drumStep = 0;
+  state.currentUiDrumStep = -1;
+  state.drumSubStep = 0;
+  clearDrumTimers();
+  const bars = Math.round(newFinestLength / getMeterConfig(meter).defaultGridResolution);
+  setStatus(`Largo: ${selectedSteps} pasos (${bars} compas${bars === 1 ? "" : "es"})`);
+  saveAppState();
+  renderSceneButtons();
+  renderTransport();
+  renderDrumEditor();
+});
+
 drumSubdivisionToggle.addEventListener("click", () => {
   const oldCount = getCurrentStepCount();
   state.drumSubdivision = state.drumSubdivision === "1/16" ? "1/8" : "1/16";
@@ -3364,10 +3649,12 @@ drumGrooveSelect.addEventListener("change", (event) => {
   const scene = scenes[state.sceneId];
   scene.groove = event.target.value;
   if (scene.groove === "auto") {
+    state.drumStepCount = null;
     sceneDrumPatterns[state.sceneId] = createEmptyPattern("empty");
   } else {
     scene.meter = getGrooveDefaultMeter(scene.groove);
-    sceneDrumPatterns[state.sceneId] = createGroovePattern(scene.groove, scene.meter);
+    sceneDrumPatterns[state.sceneId] = buildGroovePatternForScene(state.sceneId);
+    state.drumStepCount = scene.drumStepCount;
   }
   state.drumPatternId = `groove:${scene.groove}`;
   state.drumStep = 0;
@@ -3405,6 +3692,7 @@ drumVolume.addEventListener("input", (event) => {
 drumKitSelect.addEventListener("change", (event) => {
   state.drumKitId = event.target.value;
   setStatus(`Drum kit: ${drumKits[state.drumKitId].name}`);
+  loadKitSamples(state.drumKitId);
   saveAppState();
   renderTransport();
 });
@@ -3441,6 +3729,8 @@ function openInstrumentMenu(instrument, trigger) {
     instrumentMenuSelect.appendChild(option);
   });
   instrumentMenuSelect.value = state.drumVoiceIds[instrument];
+  instrumentMenuLevel.value = String(getInstrumentLevel(instrument));
+  instrumentMenuLevelReadout.textContent = `${Math.round(getInstrumentLevel(instrument) * 100)}%`;
 
   const panelRect = drumEditorPanel.getBoundingClientRect();
   const triggerRect = trigger.getBoundingClientRect();
@@ -3517,6 +3807,14 @@ instrumentMenuSelect.addEventListener("change", (event) => {
   setDrumVoice(instrument, event.target.value);
   instrumentMenuSelect.value = state.drumVoiceIds[instrument];
   instrumentMenuTitle.textContent = getInstrumentLabel(instrument);
+});
+
+instrumentMenuLevel.addEventListener("input", (event) => {
+  const instrument = instrumentMenu.dataset.instrument;
+  const level = Number(event.target.value);
+  state.drumInstrumentLevel[instrument] = level;
+  instrumentMenuLevelReadout.textContent = `${Math.round(level * 100)}%`;
+  saveAppState();
 });
 
 instrumentMenuLoad.addEventListener("click", () => {
@@ -3739,6 +4037,13 @@ loopPadFileInput.addEventListener("change", (event) => {
 document.addEventListener("click", closeLoopPadMenu);
 
 resetPattern.addEventListener("click", resetCurrentDrumPattern);
+
+addPercVoiceButton.addEventListener("click", () => {
+  state.drumPercEnabled = true;
+  saveAppState();
+  renderDrumEditor();
+  setStatus("Voz Perc agregada.");
+});
 
 accentModeToggle.addEventListener("click", () => {
   state.ui.accentEditMode = !state.ui.accentEditMode;

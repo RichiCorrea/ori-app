@@ -4,5 +4,9 @@
   "private": true,
   "scripts": {
     "start": "node dev-server.js"
+  },
+  "devDependencies": {
+    "puppeteer": "^13.7.0",
+    "sharp": "^0.35.1"
   }
 }

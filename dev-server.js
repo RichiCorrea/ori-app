@@ -11,6 +11,7 @@ const types = {
   ".js": "text/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".webmanifest": "application/manifest+json; charset=utf-8",
+  ".wav": "audio/wav",
 };
 
 function createServer() {
