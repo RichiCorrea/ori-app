@@ -7,7 +7,7 @@
     <title>ORI</title>
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="apple-touch-icon" href="./ORI-icon.png" />
-    <link rel="stylesheet" href="./styles.css?v=166" />
+    <link rel="stylesheet" href="./styles.css?v=181" />
   </head>
   <body>
     <main class="app">
@@ -549,6 +549,10 @@
           <input id="loopPadMenuVolume" type="range" min="0" max="100" value="100" />
         </label>
         <button id="loopPadMenuReverse" class="utility-button" type="button">Reverse</button>
+        <button id="loopPadMenuFollowTempo" class="utility-button" type="button">Seguir Tempo</button>
+        <fieldset class="name-field loop-pad-bpm-field">
+          <input id="loopPadMenuOriginalBpm" type="number" min="40" max="220" step="1" placeholder="BPM original" />
+        </fieldset>
         <label class="slider compact">
           <span>Fade In <strong id="loopPadMenuFadeInReadout">15 ms</strong></span>
           <input id="loopPadMenuFadeIn" type="range" min="10" max="2000" value="15" />
@@ -578,6 +582,7 @@
         </div>
         <button id="loopPadMenuLoad" class="sample-load" type="button">Cargar</button>
         <button id="loopPadMenuClear" class="sample-load" type="button">Quitar</button>
+        <button id="loopPadMenuAccept" class="save-button" type="button">Aceptar</button>
       </div>
     </main>
 
@@ -604,6 +609,6 @@
       </div>
     </div>
 
-    <script type="module" src="./app.js?v=166"></script>
+    <script type="module" src="./app.js?v=181"></script>
   </body>
 </html>

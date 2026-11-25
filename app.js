@@ -113,6 +113,8 @@ function normalizeLoopSlot(slot, index) {
       startMs: typeof slot?.trim?.startMs === "number" ? slot.trim.startMs : 0,
       endMs: typeof slot?.trim?.endMs === "number" ? slot.trim.endMs : null,
     },
+    followTempo: Boolean(slot?.followTempo),
+    originalBpm: typeof slot?.originalBpm === "number" && slot.originalBpm > 0 ? slot.originalBpm : null,
   };
 }
 
@@ -557,6 +559,7 @@ const state = {
   loopPadData: {},
   loopPadNames: {},
   loopPadInstances: {},
+  loopPadGranularVoices: {},
   loopPadPendingStart: {},
   loopPadTrimEditor: null,
   loopPadModalScrollLocked: false,
@@ -796,12 +799,15 @@ const loopPadMenuBackdrop = document.querySelector("#loopPadMenuBackdrop");
 const loopPadMenu = document.querySelector("#loopPadMenu");
 const loopPadMenuTitle = document.querySelector("#loopPadMenuTitle");
 const loopPadMenuClose = document.querySelector("#loopPadMenuClose");
+const loopPadMenuAccept = document.querySelector("#loopPadMenuAccept");
 const loopPadMenuType = document.querySelector("#loopPadMenuType");
 const loopPadMenuQuantize = document.querySelector("#loopPadMenuQuantize");
 const loopPadMenuQuantizeValue = document.querySelector("#loopPadMenuQuantizeValue");
 const loopPadMenuVolume = document.querySelector("#loopPadMenuVolume");
 const loopPadMenuVolumeReadout = document.querySelector("#loopPadMenuVolumeReadout");
 const loopPadMenuReverse = document.querySelector("#loopPadMenuReverse");
+const loopPadMenuFollowTempo = document.querySelector("#loopPadMenuFollowTempo");
+const loopPadMenuOriginalBpm = document.querySelector("#loopPadMenuOriginalBpm");
 const loopPadMenuFadeIn = document.querySelector("#loopPadMenuFadeIn");
 const loopPadMenuFadeInReadout = document.querySelector("#loopPadMenuFadeInReadout");
 const loopPadMenuFadeOut = document.querySelector("#loopPadMenuFadeOut");
@@ -1127,6 +1133,8 @@ function openLoopPadMenu(slotId) {
   loopPadMenuVolume.value = Math.round(slot.volume * 100);
   loopPadMenuVolumeReadout.textContent = `${Math.round(slot.volume * 100)}%`;
   loopPadMenuReverse.classList.toggle("active", slot.reverse);
+  loopPadMenuFollowTempo.classList.toggle("active", slot.followTempo);
+  loopPadMenuOriginalBpm.value = slot.originalBpm || "";
   loopPadMenuFadeIn.value = slot.fadeInMs;
   loopPadMenuFadeInReadout.textContent = `${slot.fadeInMs} ms`;
   loopPadMenuFadeOut.value = slot.fadeOutMs;
@@ -1620,7 +1628,13 @@ function updatePadSetting(setting, value) {
     });
   }
 
-  restartPadIfPlaying(0.55);
+  if (setting === "mood") {
+    // Mood swaps chord notes/waveforms, not just continuous values — needs the real
+    // crossfade restart (and resets movement/shimmer/warmth/space/texture to its preset).
+    restartPadIfPlaying(0.55);
+  } else if (state.isPlaying && state.activePad) {
+    updatePadLiveParams(state.activePad, scene);
+  }
   saveAppState();
   renderTransport();
   renderSceneButtons();
@@ -2053,10 +2067,174 @@ function buildReversedBuffer(audioBuffer) {
   return reversed;
 }
 
+function getReversedLoopBuffer(slotId) {
+  const buffer = state.loopPadBuffers[slotId];
+  if (!buffer) return null;
+  if (!state.loopPadReverseBuffers[slotId]) {
+    state.loopPadReverseBuffers[slotId] = buildReversedBuffer(buffer);
+  }
+  return state.loopPadReverseBuffers[slotId];
+}
+
+// Follow Tempo keeps the pad's pitch fixed while its playback speed tracks the scene's
+// BPM. Built as a home-grown granular time-stretch (overlapping fixed-length grains,
+// each played at native pitch/rate, crossfaded together — the same idea as Ableton's
+// Texture/Stretch modes) instead of a third-party WASM library: an evaluated WASM
+// time-stretch dependency (signalsmith-stretch) turned out to reliably go silent once
+// the shared AudioContext had been alive more than ~300ms before the node's first use —
+// a dealbreaker for a pad triggered minutes into a real session. This engine only uses
+// native AudioBufferSourceNode/GainNode scheduling, the same primitives the rest of the
+// app's audio already relies on, so it has no equivalent failure mode.
+const LOOP_GRANULAR_GRAIN_SEC = 0.08; // length of each grain, at native pitch
+const LOOP_GRANULAR_SYNTHESIS_HOP_SEC = 0.04; // spacing between grain starts (50% overlap)
+const LOOP_GRANULAR_LOOKAHEAD_SEC = 0.25;
+const LOOP_GRANULAR_TICK_MS = 40;
+
+// Hann window spanning the full grain (fadeSec always works out to grainSec/2 — see
+// scheduleLoopPadGrain) — an equal-power crossfade between overlapping grains instead of
+// a linear one, which noticeably reduces the "warble"/phasiness that shows up on sustained
+// tones the further the rate drifts from 1 (more overlap-shifted, less correlated grains).
+const LOOP_GRANULAR_WINDOW_SAMPLES = 64;
+const LOOP_GRANULAR_WINDOW = new Float32Array(LOOP_GRANULAR_WINDOW_SAMPLES);
+for (let i = 0; i < LOOP_GRANULAR_WINDOW_SAMPLES; i++) {
+  LOOP_GRANULAR_WINDOW[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (LOOP_GRANULAR_WINDOW_SAMPLES - 1));
+}
+
+let loopPadGranularTimer = null;
+
+function clampStretchRate(rate) {
+  if (!Number.isFinite(rate) || rate <= 0) return 1;
+  return Math.max(0.25, Math.min(4, rate));
+}
+
+function ensureLoopPadGranularTimerRunning() {
+  if (loopPadGranularTimer || !state.audioContext) return;
+  loopPadGranularTimer = window.setInterval(scheduleLoopPadGranularGrains, LOOP_GRANULAR_TICK_MS);
+}
+
+function stopLoopPadGranularTimerIfIdle() {
+  const anyActive = Object.keys(state.loopPadGranularVoices).length > 0;
+  if (!anyActive && loopPadGranularTimer) {
+    window.clearInterval(loopPadGranularTimer);
+    loopPadGranularTimer = null;
+  }
+}
+
+function scheduleLoopPadGranularGrains() {
+  if (!state.audioContext) return;
+  const horizon = state.audioContext.currentTime + LOOP_GRANULAR_LOOKAHEAD_SEC;
+  Object.keys(state.loopPadGranularVoices).forEach((slotId) => {
+    const voice = state.loopPadGranularVoices[slotId];
+    if (!voice) return;
+    let guard = 0;
+    while (voice.nextGrainTime < horizon && guard < 50) {
+      scheduleLoopPadGrain(voice);
+      guard += 1; // safety net: never spin forever if rate/hop math goes degenerate
+    }
+  });
+}
+
+function scheduleLoopPadGrain(voice) {
+  const regionLength = Math.max(0.02, voice.loopEnd - voice.loopStart);
+  if (voice.readPos >= voice.loopEnd || voice.readPos < voice.loopStart) {
+    voice.readPos = voice.loopStart + (((voice.readPos - voice.loopStart) % regionLength) + regionLength) % regionLength;
+  }
+  const grainSec = Math.min(LOOP_GRANULAR_GRAIN_SEC, voice.loopEnd - voice.readPos, regionLength);
+
+  const source = state.audioContext.createBufferSource();
+  source.buffer = voice.buffer;
+  const grainGain = state.audioContext.createGain();
+  source.connect(grainGain);
+  grainGain.connect(voice.outputGain);
+
+  const outputTime = voice.nextGrainTime;
+  grainGain.gain.setValueCurveAtTime(LOOP_GRANULAR_WINDOW, outputTime, grainSec);
+
+  source.start(outputTime, voice.readPos, grainSec);
+  source.stop(outputTime + grainSec + 0.02);
+  source.onended = () => {
+    try { source.disconnect(); } catch (error) { /* already gone */ }
+    try { grainGain.disconnect(); } catch (error) { /* already gone */ }
+  };
+
+  voice.readPos += LOOP_GRANULAR_SYNTHESIS_HOP_SEC * voice.rate;
+  voice.nextGrainTime = outputTime + LOOP_GRANULAR_SYNTHESIS_HOP_SEC;
+}
+
+function triggerLoopPadGranular(slotId, slot, buffer, time) {
+  applyChannelGain("loop");
+  stopLoopPad(slotId, 0.03);
+
+  const sourceDuration = buffer.duration;
+  const fwdStartSec = Math.max(0, Math.min(sourceDuration, (slot.trim.startMs || 0) / 1000));
+  const fwdEndSec = slot.trim.endMs === null ? sourceDuration : Math.max(fwdStartSec, Math.min(sourceDuration, slot.trim.endMs / 1000));
+  const trimStartSec = slot.reverse ? sourceDuration - fwdEndSec : fwdStartSec;
+  const trimEndSec = slot.reverse ? sourceDuration - fwdStartSec : fwdEndSec;
+  const rate = clampStretchRate(state.bpm / slot.originalBpm);
+
+  const outputGain = state.audioContext.createGain();
+  outputGain.connect(state.loopGain);
+  const fadeInSec = Math.max(0.001, slot.fadeInMs / 1000);
+  outputGain.gain.setValueAtTime(0.0001, time);
+  outputGain.gain.exponentialRampToValueAtTime(Math.max(0.0001, slot.volume), time + fadeInSec);
+
+  const voice = {
+    buffer,
+    loopStart: trimStartSec,
+    loopEnd: trimEndSec,
+    readPos: trimStartSec,
+    nextGrainTime: time,
+    rate,
+    outputGain,
+  };
+  state.loopPadGranularVoices[slotId] = voice;
+  ensureLoopPadGranularTimerRunning();
+  scheduleLoopPadGranularGrains();
+
+  state.loopPadInstances[slotId] = { granular: true, gain: outputGain };
+  renderLoopPadStates();
+}
+
+function updateFollowTempoLoopRates() {
+  Object.entries(state.loopPadGranularVoices).forEach(([slotId, voice]) => {
+    const slot = getCurrentLoopSlot(slotId);
+    if (!slot?.followTempo || !slot.originalBpm) return;
+    voice.rate = clampStretchRate(state.bpm / slot.originalBpm);
+  });
+}
+
+function toggleLoopPadFollowTempo(slotId) {
+  const slot = getCurrentLoopSlot(slotId);
+  if (!slot) return;
+  slot.followTempo = !slot.followTempo;
+  // Mid-playback engine swap isn't meaningful (same precedent as toggleLoopPadReverse):
+  // stop whatever is currently sounding so the next tap picks up the new engine/rate.
+  stopLoopPad(slotId, 0.03);
+  saveAppState();
+}
+
+function updateLoopPadOriginalBpm(slotId, value) {
+  const slot = getCurrentLoopSlot(slotId);
+  if (!slot) return;
+  const parsed = Number(value);
+  slot.originalBpm = Number.isFinite(parsed) && parsed > 0 ? Math.max(40, Math.min(220, parsed)) : null;
+  updateFollowTempoLoopRates();
+  saveAppState();
+}
+
 function triggerLoopPad(slotId, time = state.audioContext?.currentTime) {
   if (!state.audioContext) return;
   const slot = getCurrentLoopSlot(slotId);
   if (!slot) return;
+
+  if (slot.followTempo && slot.type === "loop" && slot.originalBpm) {
+    const buffer = slot.reverse ? getReversedLoopBuffer(slotId) : state.loopPadBuffers[slotId];
+    if (buffer) {
+      triggerLoopPadGranular(slotId, slot, buffer, time);
+      return;
+    }
+  }
+
   let buffer = state.loopPadBuffers[slotId];
   if (slot.reverse && buffer) {
     if (!state.loopPadReverseBuffers[slotId]) {
@@ -2120,6 +2298,18 @@ function stopLoopPad(slotId, fadeSeconds) {
   instance.gain.gain.cancelScheduledValues(now);
   instance.gain.gain.setValueAtTime(Math.max(instance.gain.gain.value, 0.0001), now);
   instance.gain.gain.exponentialRampToValueAtTime(0.0001, now + fade);
+  if (instance.granular) {
+    // Stop scheduling new grains immediately; whatever's already scheduled rings out
+    // under this same fading gain node, then the grains' own onended disconnects them.
+    delete state.loopPadGranularVoices[slotId];
+    stopLoopPadGranularTimerIfIdle();
+    window.setTimeout(() => {
+      try { instance.gain.disconnect(); } catch (error) { /* already gone */ }
+    }, fade * 1000 + LOOP_GRANULAR_GRAIN_SEC * 1000 + 80);
+    if (state.loopPadInstances[slotId] === instance) delete state.loopPadInstances[slotId];
+    renderLoopPadStates();
+    return;
+  }
   window.setTimeout(() => {
     try { instance.source.stop(); } catch (error) { /* already stopped */ }
     instance.source.disconnect();
@@ -2479,6 +2669,10 @@ function createPad(scene, isCrossfade = false) {
   const chord = getPadChordFrequencies(scene.key, mood);
   const nodes = [];
   const oscillators = [];
+  // Node refs needed to live-update movement/shimmer/warmth/space/texture without tearing
+  // the pad down (see updatePadLiveParams) — mood/key changes still need a real restart
+  // since they change chord notes/waveforms, not just continuous param values.
+  const params = { mood, chordDetunedGains: [], chordWarmGains: [] };
 
   const output = state.audioContext.createGain();
   const bodyGain = state.audioContext.createGain();
@@ -2528,6 +2722,9 @@ function createPad(scene, isCrossfade = false) {
   saturation.oversample = "2x";
   spaceFilter.type = "lowpass";
   spaceFilter.frequency.setValueAtTime(1800 + shimmer * 3400, now);
+  Object.assign(params, {
+    output, bodyGain, textureGain, delay, feedback, delayGain, filter, saturation, spaceFilter,
+  });
   // FDN shimmer parameters
   // Feedback 0.68–0.78 → RT60 ≈ 1.7–2.7 s (longest comb, 97 ms).
   // Steady-state comb gain = 1/(1-feedback). At fb=0.78: max 4.55x — input kept ≤ 0.10.
@@ -2574,6 +2771,10 @@ function createPad(scene, isCrossfade = false) {
   shimmerOutputGain.gain.exponentialRampToValueAtTime(
     Math.max(0.001, (0.36 + shimmer * 1.21 + space * 0.47) * mood.shimmerLevel), now + (isCrossfade ? 0.45 : 1.8)
   );
+  Object.assign(params, {
+    shimmerSourceBus, bodyShimmerSend, shimmerPreDelay, fdnCombs, shimmerDamping,
+    shimmerStereoL, shimmerStereoR, shimmerOutputGain,
+  });
 
   chord.forEach((frequency, index) => {
     // Three-voice unison per chord note: saw outer spread + triangle center warm fill.
@@ -2608,6 +2809,8 @@ function createPad(scene, isCrossfade = false) {
     warmOscillator.start(now);
     oscillators.push(oscillator, detunedOscillator, warmOscillator);
     nodes.push(voiceGain, detunedGain, warmGain);
+    params.chordDetunedGains.push({ gain: detunedGain, index });
+    params.chordWarmGains.push({ gain: warmGain, index });
   });
 
   // Shimmer voices: dual detuned oscillators per chord note at octave (+12st = ×2).
@@ -2661,12 +2864,15 @@ function createPad(scene, isCrossfade = false) {
   noise.loop = true;
   const isLowTexture = settings.mood === "dark" || settings.mood === "intimate";
   const isAirTexture = settings.mood === "prayer" || settings.mood === "heaven";
+  params.isAirTexture = isAirTexture;
   textureFilter.type = isLowTexture ? "lowpass" : isAirTexture ? "highpass" : "bandpass";
   textureFilter.frequency.setValueAtTime(mood.textureTone + settings.texture * 22, now);
   textureFilter.Q.setValueAtTime(isAirTexture ? 0.60 : 0.65 + texture * 4, now);
   textureAntiHiss.type = "highshelf";
   textureAntiHiss.frequency.setValueAtTime(3800, now);
   textureAntiHiss.gain.setValueAtTime(-texture * 26, now);
+  params.textureFilter = textureFilter;
+  params.textureAntiHiss = textureAntiHiss;
   const textureFlutterDelay = state.audioContext.createDelay(0.02);
   const textureFlutterLfo = state.audioContext.createOscillator();
   const textureFlutterDepth = state.audioContext.createGain();
@@ -2690,7 +2896,9 @@ function createPad(scene, isCrossfade = false) {
   const barSeconds = (60 / state.bpm) * getBeatsPerBar();
   lfo.frequency.setValueAtTime(1 / Math.max(6, barSeconds * barsPerCycle), now);
   const filterCenter = mood.filterBase + warmth * 44 + shimmer * 180;
-  lfoDepth.gain.setValueAtTime(Math.min(filterCenter * 0.82, (140 + movement * 820) * evolveLift), now);
+  // Capped well under filterCenter so the low end of the sweep never dips dark enough to
+  // read as the pad fading out — movement should feel like brightness breathing, not a cut.
+  lfoDepth.gain.setValueAtTime(Math.min(filterCenter * 0.5, (140 + movement * 820) * evolveLift), now);
   lfo.connect(lfoDepth);
   lfoDepth.connect(filter.frequency);
   lfo.start(now);
@@ -2714,6 +2922,7 @@ function createPad(scene, isCrossfade = false) {
   fdnCombs.forEach(({ dly }) => shimmerModDepth.connect(dly.delayTime));
   shimmerModLfo.start(now);
   oscillators.push(shimmerModLfo, textureFlutterLfo);
+  Object.assign(params, { lfo, lfoDepth, delayLfo, delayLfoDepth, shimmerModLfo, shimmerModDepth });
 
   filter.connect(saturation);
   saturation.connect(bodyGain);
@@ -2786,7 +2995,70 @@ function createPad(scene, isCrossfade = false) {
     shimmerPreDiff3,
     ...fdnCombs.flatMap(({ dly, lp, fb }) => [dly, lp, fb]),
   );
-  return { output, oscillators, nodes };
+  return { output, oscillators, nodes, params };
+}
+
+// Re-targets every continuous Pad Synth param (movement/shimmer/warmth/space/texture)
+// on the ALREADY-PLAYING pad instead of tearing it down and crossfading a new one in —
+// that's what made every slider drag audibly cut/click. Mood/key still go through
+// createPad's full restart since those change chord notes and waveforms, not just values.
+function updatePadLiveParams(pad, scene) {
+  if (!pad?.params) return;
+  const p = pad.params;
+  const now = state.audioContext.currentTime;
+  const t = 0.1; // setTargetAtTime time constant — fast enough to track a slider, no zipper noise
+  const settings = normalizePadSettings(scene.padSettings);
+  const mood = p.mood;
+  const movement = settings.movement / 100;
+  const shimmer = settings.shimmer / 100;
+  const warmth = (settings.warmth / 100) ** 2;
+  const space = settings.space / 100;
+  const texture = Math.min(0.35, settings.texture / 100);
+  const evolveLift = settings.evolve ? 1.12 : 1;
+  const barSeconds = (60 / state.bpm) * getBeatsPerBar();
+  const filterCenter = mood.filterBase + warmth * 44 + shimmer * 180;
+
+  p.output.gain.setTargetAtTime((0.26 + warmth * 0.019) * mood.bodyLevel, now, t);
+  p.bodyGain.gain.setTargetAtTime((0.28 + warmth * 0.021) * mood.bodyLevel, now, t);
+  p.textureGain.gain.setTargetAtTime(0.001 + texture * 0.0116, now, t);
+  p.delay.delayTime.setTargetAtTime(mood.delayBase + space * 0.58, now, t);
+  p.feedback.gain.setTargetAtTime(Math.min(0.62, mood.feedbackBase + space * 0.24), now, t);
+  p.delayGain.gain.setTargetAtTime(0.02 + space * 0.34, now, t);
+  p.filter.frequency.setTargetAtTime(filterCenter, now, t);
+  p.filter.Q.setTargetAtTime(mood.filterQ + movement * 1.6, now, t);
+  p.saturation.curve = createSaturationCurve(warmth * 0.019 + (mood.wave === "sawtooth" ? 0.10 : 0));
+  p.spaceFilter.frequency.setTargetAtTime(1800 + shimmer * 3400, now, t);
+
+  p.shimmerSourceBus.gain.setTargetAtTime(Math.max(0.0001, shimmer * 0.11 * mood.shimmerLevel), now, t);
+  p.bodyShimmerSend.gain.setTargetAtTime(shimmer * 0.42 * mood.shimmerLevel, now, t);
+  p.shimmerPreDelay.delayTime.setTargetAtTime(0.02 + space * 0.08, now, t);
+  p.fdnCombs.forEach(({ lp, fb }, i) => {
+    lp.frequency.setTargetAtTime(Math.max(900, 1400 + mood.shimmerColor * 2800 + shimmer * 1200 + space * 1200 - i * 70), now, t);
+    fb.gain.setTargetAtTime(Math.min(0.80, 0.60 + space * 0.20), now, t);
+  });
+  p.shimmerDamping.frequency.setTargetAtTime(Math.max(1400, 1800 + mood.shimmerColor * 3000 + shimmer * 1200 + space * 1400), now, t);
+  p.shimmerStereoL.delayTime.setTargetAtTime(0.016 + space * 0.024, now, t);
+  p.shimmerStereoR.delayTime.setTargetAtTime(0.026 + space * 0.038, now, t);
+  p.shimmerOutputGain.gain.setTargetAtTime(Math.max(0.0001, (0.36 + shimmer * 1.21 + space * 0.47) * mood.shimmerLevel), now, t);
+
+  p.chordDetunedGains.forEach(({ gain, index }) => {
+    gain.gain.setTargetAtTime((0.10 + warmth * 0.010) * (1 - index * 0.07), now, t);
+  });
+  p.chordWarmGains.forEach(({ gain, index }) => {
+    gain.gain.setTargetAtTime((0.11 + warmth * 0.009) * (1 - index * 0.06), now, t);
+  });
+
+  p.textureFilter.frequency.setTargetAtTime(mood.textureTone + settings.texture * 22, now, t);
+  p.textureFilter.Q.setTargetAtTime(p.isAirTexture ? 0.60 : 0.65 + texture * 4, now, t);
+  p.textureAntiHiss.gain.setTargetAtTime(-texture * 26, now, t);
+
+  const barsPerCycle = 4 + (1 - movement) * 12;
+  p.lfo.frequency.setTargetAtTime(1 / Math.max(6, barSeconds * barsPerCycle), now, t);
+  p.lfoDepth.gain.setTargetAtTime(Math.min(filterCenter * 0.5, (140 + movement * 820) * evolveLift), now, t);
+  p.delayLfo.frequency.setTargetAtTime(1 / Math.max(5, barSeconds * (2 + movement * 6)), now, t);
+  p.delayLfoDepth.gain.setTargetAtTime(0.006 + movement * 0.035, now, t);
+  p.shimmerModLfo.frequency.setTargetAtTime(0.06 + movement * 0.1, now, t);
+  p.shimmerModDepth.gain.setTargetAtTime(0.0012 + movement * 0.0016, now, t);
 }
 
 function stopPad(pad, fadeSeconds = 1) {
@@ -3089,6 +3361,7 @@ function stop() {
 function setBpm(bpm, restartScheduler = true) {
   state.bpm = Math.max(48, Math.min(156, Number(bpm)));
   if (state.isPlaying && restartScheduler) scheduleTransport();
+  updateFollowTempoLoopRates();
   renderTransport();
 }
 
@@ -3893,8 +4166,9 @@ loopPadMenu.addEventListener("click", (event) => {
   event.stopPropagation();
 });
 
-loopPadMenuBackdrop.addEventListener("click", closeLoopPadMenu);
-loopPadMenuClose.addEventListener("click", closeLoopPadMenu);
+loopPadMenuBackdrop.addEventListener("click", closeLoopPadMenuAndCommit);
+loopPadMenuClose.addEventListener("click", closeLoopPadMenuAndCommit);
+loopPadMenuAccept.addEventListener("click", closeLoopPadMenuAndCommit);
 
 loopPadMenuType.addEventListener("change", () => {
   const slotId = loopPadMenu.dataset.slotId;
@@ -3937,6 +4211,29 @@ loopPadMenuReverse.addEventListener("click", () => {
   const slot = getCurrentLoopSlot(slotId);
   loopPadMenuReverse.classList.toggle("active", Boolean(slot?.reverse));
 });
+
+loopPadMenuFollowTempo.addEventListener("click", () => {
+  const slotId = loopPadMenu.dataset.slotId;
+  if (!slotId) return;
+  toggleLoopPadFollowTempo(slotId);
+  const slot = getCurrentLoopSlot(slotId);
+  loopPadMenuFollowTempo.classList.toggle("active", Boolean(slot?.followTempo));
+});
+
+loopPadMenuOriginalBpm.addEventListener("input", () => {
+  const slotId = loopPadMenu.dataset.slotId;
+  if (!slotId) return;
+  updateLoopPadOriginalBpm(slotId, loopPadMenuOriginalBpm.value);
+});
+
+function closeLoopPadMenuAndCommit() {
+  // Some mobile keyboards don't reliably fire the number input's own commit event
+  // before a nearby button's click handler runs — re-apply its current value
+  // explicitly on any closing action instead of trusting that timing.
+  const slotId = loopPadMenu.dataset.slotId;
+  if (slotId) updateLoopPadOriginalBpm(slotId, loopPadMenuOriginalBpm.value);
+  closeLoopPadMenu();
+}
 
 loopPadMenuFadeIn.addEventListener("input", () => {
   const slotId = loopPadMenu.dataset.slotId;
@@ -4033,8 +4330,6 @@ loopPadFileInput.addEventListener("change", (event) => {
   if (slotId) loadLoopPadFile(slotId, file);
   event.target.value = "";
 });
-
-document.addEventListener("click", closeLoopPadMenu);
 
 resetPattern.addEventListener("click", resetCurrentDrumPattern);
 

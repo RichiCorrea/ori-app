@@ -24,6 +24,14 @@ input {
   font: inherit;
 }
 
+/* `color-scheme: dark` alone doesn't reliably force a dark native dropdown list on every
+   desktop browser — selects were ending up with light text on an effectively light/white
+   option list (readable only on the one row the OS hover-highlights). Force it explicitly. */
+option {
+  background-color: #1a1e24;
+  color: #f7f3e8;
+}
+
 .app {
   width: min(100%, 720px);
   min-height: 100vh;
@@ -378,7 +386,7 @@ button {
 .arp-panel.collapsed { display: none; }
 .arp-controls {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
 }
 .arp-fx-header { display: flex; gap: 8px; }
@@ -455,7 +463,7 @@ button {
 .arp-fx-panel.collapsed { display: none; }
 .arp-fx-row {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 10px;
 }
 
@@ -781,7 +789,7 @@ button {
 
 .loop-pad-grid {
   display: grid;
-  grid-template-columns: repeat(var(--pad-cols, 3), 1fr);
+  grid-template-columns: repeat(var(--pad-cols, 3), minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -847,7 +855,8 @@ button {
 
 #loopPadMenuTitle,
 #loopPadMenuType,
-#loopPadMenuReverse {
+#loopPadMenuReverse,
+#loopPadMenuAccept {
   grid-column: 1 / -1;
 }
 
@@ -1245,6 +1254,17 @@ input[type="range"] {
 .name-field input::placeholder {
   color: rgba(247, 243, 232, 0.45);
 }
+.loop-pad-bpm-field {
+  height: auto;
+  min-height: 34px;
+  padding: 0 10px;
+}
+
+.loop-pad-bpm-field input {
+  text-align: center;
+  font-size: 0.78rem;
+}
+
 .name-field input {
   border: none;
   background: transparent;
@@ -1376,6 +1396,33 @@ input[type="range"] {
 @media (min-width: 680px) {
   .scene-grid {
     grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 600px) {
+  .app {
+    /* Extra breathing room from the screen edges — a scroll gesture starting near the
+       edge was landing on buttons/sliders instead of just scrolling the page. */
+    padding-left: clamp(18px, 6vw, 32px);
+    padding-right: clamp(18px, 6vw, 32px);
+  }
+
+  /* The extra edge padding above left less room for Arp's 3-column Mode/Rate/Octaves
+     row (overflowed on narrow phones) — shrink its label/select footprint to compensate. */
+  .arp-controls {
+    gap: 6px;
+  }
+  .arp-controls .kit-control {
+    gap: 4px;
+  }
+  .arp-controls .kit-control span {
+    font-size: 0.64rem;
+  }
+  .arp-controls select {
+    max-width: 100%;
+    min-width: 0;
+    font-size: 0.68rem;
+    padding: 0 4px;
   }
 }
 
